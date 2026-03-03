@@ -1,4 +1,5 @@
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query
+from fastapi.responses import RedirectResponse, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -14,6 +15,9 @@ import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 import json
 import asyncio
+import io
+import zipfile
+import urllib.parse
 
 # ============================================================
 # CONFIGURATION
@@ -37,6 +41,9 @@ SPOTIFY_SCOPES = "user-read-playback-state user-modify-playback-state user-read-
 JWT_SECRET = os.environ.get('JWT_SECRET', 'notify-default-secret-change-me')
 JWT_ALGORITHM = os.environ.get('JWT_ALGORITHM', 'HS256')
 JWT_EXPIRATION_DAYS = int(os.environ.get('JWT_EXPIRATION_DAYS', '7'))
+
+# Frontend URL for redirects
+FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
 
 # Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -209,9 +216,8 @@ async def spotify_login():
     auth_url = sp_oauth.get_authorize_url()
     return {"auth_url": auth_url}
 
-@api_router.get("/auth/callback")
-async def spotify_callback(code: str):
-    """Handle Spotify OAuth callback, create/update user, return JWT."""
+async def _handle_spotify_code(code: str):
+    """Shared logic: exchange Spotify code for tokens, create/update user, return JWT + user."""
     sp_oauth = get_spotify_oauth()
 
     try:
@@ -220,19 +226,16 @@ async def spotify_callback(code: str):
         logger.error(f"Spotify token exchange failed: {e}")
         raise HTTPException(status_code=400, detail=f"Spotify auth failed: {str(e)}")
 
-    # Get user profile from Spotify
     sp = spotipy.Spotify(auth=token_info["access_token"])
     spotify_profile = sp.me()
 
     now = datetime.now(timezone.utc).isoformat()
     user_id = str(uuid.uuid4())
 
-    # Check if user already exists
     existing_user = await db.users.find_one({"spotify_id": spotify_profile["id"]}, {"_id": 0})
 
     if existing_user:
         user_id = existing_user["id"]
-        # Update tokens
         await db.users.update_one(
             {"spotify_id": spotify_profile["id"]},
             {"$set": {
@@ -247,7 +250,6 @@ async def spotify_callback(code: str):
             }}
         )
     else:
-        # Create new user
         user_doc = {
             "id": user_id,
             "spotify_id": spotify_profile["id"],
@@ -264,12 +266,36 @@ async def spotify_callback(code: str):
         }
         await db.users.insert_one(user_doc)
 
-    # Generate JWT
     jwt_token = create_jwt(user_id, spotify_profile["id"])
-
-    # Get user data for response
     user_data = await db.users.find_one({"id": user_id}, {"_id": 0, "spotify_access_token": 0, "spotify_refresh_token": 0, "token_expires_at": 0})
 
+    return jwt_token, user_data
+
+@api_router.get("/auth/spotify/callback")
+async def spotify_callback_redirect(code: str = None, error: str = None):
+    """Spotify redirects here. Exchange code, then redirect to frontend with JWT in URL."""
+    if error:
+        redirect_url = f"{FRONTEND_URL}/auth/callback?error={urllib.parse.quote(error)}"
+        return RedirectResponse(url=redirect_url)
+
+    if not code:
+        redirect_url = f"{FRONTEND_URL}/auth/callback?error=no_code"
+        return RedirectResponse(url=redirect_url)
+
+    try:
+        jwt_token, user_data = await _handle_spotify_code(code)
+        user_json = urllib.parse.quote(json.dumps(user_data))
+        redirect_url = f"{FRONTEND_URL}/auth/callback?token={jwt_token}&user={user_json}"
+        return RedirectResponse(url=redirect_url)
+    except Exception as e:
+        logger.error(f"Spotify callback failed: {e}")
+        redirect_url = f"{FRONTEND_URL}/auth/callback?error={urllib.parse.quote(str(e))}"
+        return RedirectResponse(url=redirect_url)
+
+@api_router.get("/auth/callback")
+async def spotify_callback_json(code: str):
+    """JSON endpoint: exchange code for JWT (used by frontend directly if needed)."""
+    jwt_token, user_data = await _handle_spotify_code(code)
     return {
         "access_token": jwt_token,
         "token_type": "bearer",
@@ -711,6 +737,39 @@ async def websocket_jam(websocket: WebSocket, room_id: str, token: str = Query(N
     except Exception as e:
         logger.error(f"WebSocket error for user {user_id} in room {room_id}: {e}")
         room_manager.disconnect(room_id, user_id)
+
+# ============================================================
+# DOWNLOAD - ZIP PROJECT
+# ============================================================
+
+@api_router.get("/download/project")
+async def download_project():
+    """Generate and download the Notify project as a ZIP file."""
+    project_root = Path(__file__).parent.parent
+    buffer = io.BytesIO()
+
+    skip_dirs = {'.git', 'node_modules', '__pycache__', '.next', 'build', 'dist', '.emergent', '.cache', 'test_reports'}
+    skip_files = {'.DS_Store', 'Thumbs.db'}
+
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for root, dirs, files in os.walk(project_root):
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
+            for file in files:
+                if file in skip_files:
+                    continue
+                file_path = Path(root) / file
+                arcname = file_path.relative_to(project_root)
+                try:
+                    zf.write(file_path, f"Notify/{arcname}")
+                except Exception:
+                    pass
+
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=Notify.zip"}
+    )
 
 # ============================================================
 # HEALTH CHECK

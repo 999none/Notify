@@ -11,26 +11,51 @@ export default function AuthCallback() {
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    const token = searchParams.get('token');
+    const userParam = searchParams.get('user');
+    const errorParam = searchParams.get('error');
     const code = searchParams.get('code');
-    if (!code) {
-      setError('No authorization code received from Spotify.');
+
+    if (errorParam) {
+      setError(`Authentication failed: ${errorParam}`);
+      setTimeout(() => navigate('/'), 3000);
       return;
     }
 
-    const handleCallback = async () => {
+    // Case 1: Token received from backend redirect (server-side OAuth callback)
+    if (token && userParam) {
       try {
-        const res = await authAPI.handleCallback(code);
-        const { access_token, user } = res.data;
-        login(access_token, user);
+        const userData = JSON.parse(decodeURIComponent(userParam));
+        login(token, userData);
         navigate('/dashboard', { replace: true });
       } catch (err) {
-        console.error('Auth callback error:', err);
+        console.error('Failed to parse user data:', err);
         setError('Authentication failed. Please try again.');
         setTimeout(() => navigate('/'), 3000);
       }
-    };
+      return;
+    }
 
-    handleCallback();
+    // Case 2: Code received from Spotify (client-side callback fallback)
+    if (code) {
+      const handleCallback = async () => {
+        try {
+          const res = await authAPI.handleCallback(code);
+          const { access_token, user } = res.data;
+          login(access_token, user);
+          navigate('/dashboard', { replace: true });
+        } catch (err) {
+          console.error('Auth callback error:', err);
+          setError('Authentication failed. Please try again.');
+          setTimeout(() => navigate('/'), 3000);
+        }
+      };
+      handleCallback();
+      return;
+    }
+
+    setError('No authorization data received.');
+    setTimeout(() => navigate('/'), 3000);
   }, [searchParams, login, navigate]);
 
   return (
@@ -38,7 +63,7 @@ export default function AuthCallback() {
       <div className="glass-card p-12 text-center max-w-md">
         {error ? (
           <>
-            <p className="text-red-400 text-lg mb-4">{error}</p>
+            <p className="text-red-400 text-lg mb-4" data-testid="auth-error">{error}</p>
             <p className="text-[#52525B] text-sm">Redirecting to home...</p>
           </>
         ) : (

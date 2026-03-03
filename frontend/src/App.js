@@ -7,6 +7,7 @@ import Landing from './pages/Landing';
 import AuthCallback from './pages/AuthCallback';
 import Dashboard from './pages/Dashboard';
 import JamRoom from './pages/JamRoom';
+import DownloadPage from './pages/Download';
 import { Loader2 } from 'lucide-react';
 
 const ProtectedRoute = ({ children }) => {
@@ -52,6 +53,7 @@ function AppRoutes() {
       <Route path="/auth/callback" element={<AuthCallback />} />
       <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/jam/:roomId" element={<ProtectedRoute><JamRoom /></ProtectedRoute>} />
+      <Route path="/download" element={<DownloadPage />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
