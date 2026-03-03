@@ -1,0 +1,8 @@
+/* Notify - Global custom styles */
+/* Base styles handled by index.css (Tailwind + CSS variables) */
+/* This file is for component-specific overrides only */
+
+/* Remove default CRA styles */
+.App {
+  min-height: 100vh;
+}

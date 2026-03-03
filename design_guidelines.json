@@ -1,0 +1,200 @@
+{
+  "design_system": {
+    "identity": {
+      "name": "Notify",
+      "persona": "E1: The Anti-AI Designer",
+      "core_philosophy": "Fusion over Imitation. Emotion First. Glass as a Material.",
+      "vibe": "Immersive, Fluid, Synchronized, Electric"
+    },
+    "typography": {
+      "font_family": {
+        "headings": "Manrope, sans-serif",
+        "body": "Plus Jakarta Sans, Inter, sans-serif",
+        "mono": "JetBrains Mono, monospace"
+      },
+      "scale": {
+        "display": "text-6xl md:text-8xl font-bold tracking-tighter",
+        "h1": "text-4xl md:text-5xl font-bold tracking-tight",
+        "h2": "text-3xl font-semibold tracking-tight",
+        "h3": "text-2xl font-semibold",
+        "body_large": "text-lg leading-relaxed",
+        "body_default": "text-base leading-relaxed",
+        "caption": "text-sm text-muted-foreground",
+        "label": "text-xs font-bold uppercase tracking-widest text-muted-foreground"
+      },
+      "usage_rules": [
+        "Headings MUST use Manrope. If not available via Google Fonts, use system sans-serif but apply tracking-tight.",
+        "Body text should be readable but not boring. Use generous line height.",
+        "Use 'JetBrains Mono' for track times, room codes, or technical data."
+      ]
+    },
+    "colors": {
+      "palette": {
+        "primary": {
+          "DEFAULT": "#00C2FF",
+          "foreground": "#000000",
+          "hover": "#33CFFF",
+          "active": "#009ACD",
+          "glow": "0 0 20px rgba(0, 194, 255, 0.5)"
+        },
+        "background": {
+          "DEFAULT": "#050505",
+          "secondary": "#0A0A0A",
+          "glass": "rgba(255, 255, 255, 0.03)"
+        },
+        "surface": {
+          "glass_heavy": "backdrop-blur-2xl bg-white/5 border-white/10",
+          "glass_light": "backdrop-blur-md bg-white/5 border-white/5",
+          "solid": "#121212"
+        },
+        "accent": {
+          "purple": "#7C3AED",
+          "pink": "#EC4899",
+          "success": "#10B981",
+          "warning": "#F59E0B",
+          "error": "#EF4444"
+        },
+        "text": {
+          "primary": "#FFFFFF",
+          "secondary": "#A1A1AA",
+          "muted": "#52525B"
+        }
+      },
+      "gradients": {
+        "hero": "radial-gradient(circle at 50% 50%, rgba(0, 194, 255, 0.15) 0%, transparent 50%)",
+        "glass_border": "linear-gradient(to bottom right, rgba(255,255,255,0.2), rgba(255,255,255,0.02))"
+      },
+      "forbidden_colors": [
+        "#1B93A4",
+        "#7351B7"
+      ]
+    },
+    "visual_enhancers": {
+      "glassmorphism": {
+        "heavy": "bg-black/40 backdrop-blur-xl border border-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.5)]",
+        "light": "bg-white/5 backdrop-blur-md border border-white/5 shadow-sm",
+        "overlay": "bg-black/60 backdrop-blur-sm"
+      },
+      "shadows": {
+        "neon": "0 0 15px rgba(0, 194, 255, 0.3)",
+        "floating": "0 20px 40px -10px rgba(0,0,0,0.5)"
+      },
+      "borders": {
+        "subtle": "1px solid rgba(255,255,255,0.08)",
+        "highlight": "1px solid rgba(0, 194, 255, 0.3)"
+      },
+      "radius": {
+        "card": "rounded-2xl",
+        "button": "rounded-full",
+        "input": "rounded-xl"
+      }
+    },
+    "layout_strategies": {
+      "bento_grid": {
+        "description": "Use CSS Grid for dashboard layouts. Mix varied span sizes.",
+        "classes": "grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4"
+      },
+      "sidebar_layout": {
+        "description": "Fixed sidebar on left, scrollable content on right. Mobile: Bottom navigation.",
+        "structure": "flex h-screen overflow-hidden"
+      },
+      "jam_room": {
+        "description": "Immersive view. Album art central or background. Controls floating at bottom.",
+        "style": "relative flex flex-col items-center justify-center h-full"
+      }
+    },
+    "components": {
+      "buttons": {
+        "primary": "bg-primary text-primary-foreground hover:bg-primary/90 shadow-[0_0_15px_rgba(0,194,255,0.3)] transition-all duration-300 hover:scale-105 rounded-full px-8 py-3 font-bold uppercase tracking-wide",
+        "ghost": "hover:bg-white/10 text-white transition-colors rounded-full px-6 py-2",
+        "icon": "p-3 rounded-full hover:bg-white/10 transition-colors text-white/80 hover:text-white hover:scale-110 active:scale-95"
+      },
+      "cards": {
+        "glass": "relative overflow-hidden rounded-2xl bg-white/5 backdrop-blur-xl border border-white/10 p-6 transition-all hover:bg-white/10 hover:border-white/20",
+        "interactive": "cursor-pointer group hover:-translate-y-1 duration-300"
+      },
+      "inputs": {
+        "search": "bg-white/5 border border-white/10 rounded-full px-5 py-3 text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-transparent transition-all w-full"
+      },
+      "navigation": {
+        "sidebar": "w-64 bg-black/90 backdrop-blur-xl border-r border-white/5 flex flex-col p-6 gap-2",
+        "mobile_bar": "fixed bottom-0 left-0 right-0 h-16 bg-black/80 backdrop-blur-xl border-t border-white/10 flex justify-around items-center z-50"
+      }
+    },
+    "motion": {
+      "transitions": {
+        "default": "transition-all duration-300 ease-out",
+        "slow": "transition-all duration-700 ease-in-out",
+        "fast": "transition-all duration-150 ease-out"
+      },
+      "animations": {
+        "fade_in": "animate-in fade-in duration-500",
+        "slide_up": "animate-in slide-in-from-bottom-4 duration-500",
+        "pulse_glow": "animate-pulse"
+      }
+    },
+    "assets": {
+      "icons": {
+        "library": "lucide-react",
+        "style": "stroke-width={1.5} className='w-5 h-5'"
+      },
+      "images": {
+        "hero_background": {
+          "url": "https://images.unsplash.com/photo-1563841930606-67e2bce48b78?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMjh8MHwxfHNlYXJjaHwyfHxjb25jZXJ0JTIwY3Jvd2QlMjBuaWdodCUyMGxpZ2h0c3xlbnwwfHx8fDE3NzI1MzQwMDR8MA&ixlib=rb-4.1.0&q=85",
+          "alt": "Concert crowd at night with lights",
+          "usage": "Landing page hero background with heavy dark overlay"
+        },
+        "user_listening": {
+          "url": "https://images.unsplash.com/photo-1760612484753-2311a768798a?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NzV8MHwxfHNlYXJjaHwzfHxwZXJzb24lMjBsaXN0ZW5pbmclMjB0byUyMGhlYWRwaG9uZXMlMjBhZXN0aGV0aWN8ZW58MHx8fHwxNzcyNTM0MDA1fDA&ixlib=rb-4.1.0&q=85",
+          "alt": "Person listening to headphones",
+          "usage": "Dashboard feature card or join room background"
+        }
+      }
+    },
+    "instructions_to_main_agent": {
+      "general": [
+        "You are building 'Notify', a high-end collaborative music app.",
+        "Theme: DARK MODE ONLY. Do not implement a light mode toggle unless specifically asked.",
+        "The aesthetic is 'Glassmorphism' (Mica). Every surface should feel like a piece of smoked glass.",
+        "Primary Color: Sky Blue (#00C2FF). Use it for actions, active states, and glows.",
+        "Corner Radius: Generous (rounded-2xl, rounded-3xl).",
+        "Spacing: Use double the normal spacing. Breathing room is luxury."
+      ],
+      "layout_rules": [
+        "Dashboard MUST use a Bento Grid layout.",
+        "Player controls MUST be prominent and floating (glass island).",
+        "Use Sonner for toasts (already installed).",
+        "Sidebar for desktop, Bottom Bar for mobile."
+      ],
+      "component_customization": {
+        "card": "Use Tailwind classes to override shadcn Card. Remove bg-card, use bg-white/5 backdrop-blur-xl.",
+        "dialog": "Make dialog overlays backdrop-blur-sm bg-black/60. Dialog content must be glass.",
+        "input": "Remove default white backgrounds. Use transparent/glass backgrounds for inputs."
+      },
+      "accessibility": [
+        "Ensure text contrast on glass backgrounds. Use 'text-white' on dark glass.",
+        "Add 'data-testid' to ALL interactive elements (buttons, inputs, room cards)."
+      ],
+      "tech_stack_specifics": [
+        "Frontend: React (JS), Tailwind CSS, shadcn/ui.",
+        "Backend: FastAPI (Python).",
+        "Realtime: WebSocket.",
+        "Auth: Spotify OAuth."
+      ]
+    },
+    "universal_guidelines": [
+      "Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients.",
+      "Don't make generic centered layouts. Create depth through layered design elements with z-index hierarchy.",
+      "Use glass-morphism effects with backdrop filters (12-24px blur).",
+      "You MUST NOT apply universal transition (e.g., transition: all).",
+      "You MUST NOT center align the app container (.App { text-align: center; }).",
+      "Always use modern button styles (pill-shaped, neon glow).",
+      "NEVER use AI assistant Emoji characters in the UI.",
+      "Every interaction needs micro-animations.",
+      "Use 2-3x more spacing than feels comfortable.",
+      "Components MUST use named exports.",
+      "Pages MUST use default exports.",
+      "Use Sonner for toasts."
+    ]
+  }
+}
