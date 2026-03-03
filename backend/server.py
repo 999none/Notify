@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query, Request
 from fastapi.responses import RedirectResponse, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -18,6 +18,8 @@ import asyncio
 import io
 import zipfile
 import urllib.parse
+import random
+import string
 
 # ============================================================
 # CONFIGURATION
@@ -26,26 +28,21 @@ import urllib.parse
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# MongoDB
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# Spotify
 SPOTIFY_CLIENT_ID = os.environ.get('SPOTIFY_CLIENT_ID')
 SPOTIFY_CLIENT_SECRET = os.environ.get('SPOTIFY_CLIENT_SECRET')
 SPOTIFY_REDIRECT_URI = os.environ.get('SPOTIFY_REDIRECT_URI')
-SPOTIFY_SCOPES = "user-read-playback-state user-modify-playback-state user-read-private user-read-email streaming user-read-currently-playing"
+SPOTIFY_SCOPES = "user-read-private user-read-email user-read-playback-state user-modify-playback-state streaming user-read-currently-playing playlist-read-private playlist-modify-public playlist-modify-private user-top-read"
 
-# JWT
 JWT_SECRET = os.environ.get('JWT_SECRET', 'notify-default-secret-change-me')
 JWT_ALGORITHM = os.environ.get('JWT_ALGORITHM', 'HS256')
 JWT_EXPIRATION_DAYS = int(os.environ.get('JWT_EXPIRATION_DAYS', '7'))
 
-# Frontend URL for redirects
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
 
-# Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -53,8 +50,7 @@ logger = logging.getLogger(__name__)
 # FASTAPI APP
 # ============================================================
 
-app = FastAPI(title="Notify API", version="1.0.0")
-
+app = FastAPI(title="Notify API", version="2.0.0")
 api_router = APIRouter(prefix="/api")
 
 app.add_middleware(
@@ -69,18 +65,6 @@ app.add_middleware(
 # PYDANTIC MODELS
 # ============================================================
 
-class UserProfile(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str
-    spotify_id: str
-    display_name: str
-    email: Optional[str] = None
-    avatar_url: Optional[str] = None
-    product: Optional[str] = None
-    is_premium: bool = False
-    created_at: str
-    updated_at: str
-
 class RoomCreate(BaseModel):
     name: str
 
@@ -93,27 +77,6 @@ class RoomTrack(BaseModel):
     position_ms: int = 0
     is_playing: bool = False
 
-class RoomResponse(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str
-    name: str
-    code: str
-    host_id: str
-    host_name: str
-    host_avatar: Optional[str] = None
-    current_track: Optional[RoomTrack] = None
-    queue: List[dict] = []
-    participants: List[str] = []
-    participant_count: int = 0
-    max_participants: int = 10
-    is_active: bool = True
-    created_at: str
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    user: UserProfile
-
 class PlayRequest(BaseModel):
     track_uri: str
     position_ms: int = 0
@@ -122,6 +85,26 @@ class PlayRequest(BaseModel):
 class SeekRequest(BaseModel):
     position_ms: int
     device_id: Optional[str] = None
+
+class PlaylistCreate(BaseModel):
+    name: str
+    description: str = ""
+    is_public: bool = True
+
+class PlaylistUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    is_public: Optional[bool] = None
+
+class PlaylistTrackAdd(BaseModel):
+    track_uri: str
+    name: str
+    artist: str
+    album_art: Optional[str] = None
+    duration_ms: int = 0
+
+class FriendRequest(BaseModel):
+    target_user_id: str
 
 # ============================================================
 # SPOTIFY SERVICE
@@ -137,17 +120,14 @@ def get_spotify_oauth():
     )
 
 async def get_user_spotify_client(user_id: str) -> spotipy.Spotify:
-    """Get authenticated Spotify client for a user, refreshing token if needed."""
     user = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Check if token is expired
     token_expires = datetime.fromisoformat(user.get("token_expires_at", "2000-01-01T00:00:00+00:00"))
     now = datetime.now(timezone.utc)
 
     if now >= token_expires:
-        # Refresh token
         sp_oauth = get_spotify_oauth()
         try:
             token_info = sp_oauth.refresh_access_token(user["spotify_refresh_token"])
@@ -187,13 +167,6 @@ def decode_jwt(token: str) -> dict:
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-async def get_current_user(authorization: str = Query(None, alias="token")) -> dict:
-    """Dependency to get current user from JWT. Accepts token from header or query param."""
-    # This will be overridden by actual header parsing in middleware
-    # For now, placeholder
-    pass
-
-# Helper to extract user from Authorization header
 async def get_user_from_header(request) -> dict:
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
@@ -206,20 +179,30 @@ async def get_user_from_header(request) -> dict:
     return user
 
 # ============================================================
+# ACTIVITY LOG HELPER
+# ============================================================
+
+async def log_activity(user_id: str, action: str, details: dict = None):
+    await db.activity_log.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "action": action,
+        "details": details or {},
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+
+# ============================================================
 # AUTH ROUTES
 # ============================================================
 
 @api_router.get("/auth/login")
 async def spotify_login():
-    """Return Spotify OAuth authorization URL."""
     sp_oauth = get_spotify_oauth()
     auth_url = sp_oauth.get_authorize_url()
     return {"auth_url": auth_url}
 
 async def _handle_spotify_code(code: str):
-    """Shared logic: exchange Spotify code for tokens, create/update user, return JWT + user."""
     sp_oauth = get_spotify_oauth()
-
     try:
         token_info = sp_oauth.get_access_token(code, as_dict=True)
     except Exception as e:
@@ -227,7 +210,12 @@ async def _handle_spotify_code(code: str):
         raise HTTPException(status_code=400, detail=f"Spotify auth failed: {str(e)}")
 
     sp = spotipy.Spotify(auth=token_info["access_token"])
-    spotify_profile = sp.me()
+    try:
+        spotify_profile = sp.me()
+    except spotipy.exceptions.SpotifyException as e:
+        if e.http_status == 403:
+            raise HTTPException(status_code=403, detail="Ton compte Spotify n'est pas enregistre dans l'app. Va sur developer.spotify.com/dashboard et ajoute ton email Spotify dans User Management.")
+        raise
 
     now = datetime.now(timezone.utc).isoformat()
     user_id = str(uuid.uuid4())
@@ -261,10 +249,14 @@ async def _handle_spotify_code(code: str):
             "spotify_access_token": token_info["access_token"],
             "spotify_refresh_token": token_info.get("refresh_token", ""),
             "token_expires_at": datetime.fromtimestamp(token_info["expires_at"], tz=timezone.utc).isoformat(),
+            "bio": "",
+            "followers_count": 0,
+            "following_count": 0,
             "created_at": now,
             "updated_at": now
         }
         await db.users.insert_one(user_doc)
+        await log_activity(user_id, "account_created")
 
     jwt_token = create_jwt(user_id, spotify_profile["id"])
     user_data = await db.users.find_one({"id": user_id}, {"_id": 0, "spotify_access_token": 0, "spotify_refresh_token": 0, "token_expires_at": 0})
@@ -273,7 +265,6 @@ async def _handle_spotify_code(code: str):
 
 @api_router.get("/auth/spotify/callback")
 async def spotify_callback_redirect(code: str = None, error: str = None):
-    """Spotify redirects here. Exchange code, then redirect to frontend with JWT in URL."""
     if error:
         redirect_url = f"{FRONTEND_URL}/auth/callback?error={urllib.parse.quote(error)}"
         return RedirectResponse(url=redirect_url)
@@ -294,27 +285,17 @@ async def spotify_callback_redirect(code: str = None, error: str = None):
 
 @api_router.get("/auth/callback")
 async def spotify_callback_json(code: str):
-    """JSON endpoint: exchange code for JWT (used by frontend directly if needed)."""
     jwt_token, user_data = await _handle_spotify_code(code)
-    return {
-        "access_token": jwt_token,
-        "token_type": "bearer",
-        "user": user_data
-    }
+    return {"access_token": jwt_token, "token_type": "bearer", "user": user_data}
 
 @api_router.post("/auth/refresh")
 async def refresh_spotify_token(request_data: dict):
-    """Refresh the Spotify access token using the stored refresh token."""
-    # Extract JWT from header would be done here
-    # For now, accepts user_id in body
     user_id = request_data.get("user_id")
     if not user_id:
         raise HTTPException(status_code=400, detail="user_id required")
-
     user = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-
     sp_oauth = get_spotify_oauth()
     try:
         token_info = sp_oauth.refresh_access_token(user["spotify_refresh_token"])
@@ -329,49 +310,494 @@ async def refresh_spotify_token(request_data: dict):
         )
         return {"status": "refreshed", "expires_at": token_info["expires_at"]}
     except Exception as e:
-        logger.error(f"Token refresh failed: {e}")
         raise HTTPException(status_code=401, detail="Token refresh failed")
 
 # ============================================================
 # USER ROUTES
 # ============================================================
 
-from fastapi import Request
-
 @api_router.get("/users/me")
 async def get_me(request: Request):
-    """Get current user profile."""
     user = await get_user_from_header(request)
-    # Remove sensitive fields
-    safe_user = {k: v for k, v in user.items() if k not in ["spotify_access_token", "spotify_refresh_token", "token_expires_at"]}
-    return safe_user
+    safe_fields = {k: v for k, v in user.items() if k not in ["spotify_access_token", "spotify_refresh_token", "token_expires_at"]}
+    return safe_fields
 
 @api_router.get("/users/me/premium")
 async def check_premium(request: Request):
-    """Check if current user has Spotify Premium."""
     user = await get_user_from_header(request)
     return {"is_premium": user.get("is_premium", False), "product": user.get("product", "free")}
+
+@api_router.get("/users/me/top-artists")
+async def get_top_artists(request: Request):
+    user = await get_user_from_header(request)
+    sp = await get_user_spotify_client(user["id"])
+    try:
+        results = sp.current_user_top_artists(limit=10, time_range='medium_term')
+        artists = []
+        for a in results.get("items", []):
+            artists.append({
+                "id": a["id"],
+                "name": a["name"],
+                "image": a["images"][0]["url"] if a.get("images") else None,
+                "genres": a.get("genres", [])[:3],
+                "popularity": a.get("popularity", 0)
+            })
+        return {"artists": artists}
+    except Exception as e:
+        return {"artists": [], "error": str(e)}
+
+@api_router.get("/users/me/top-tracks")
+async def get_top_tracks(request: Request):
+    user = await get_user_from_header(request)
+    sp = await get_user_spotify_client(user["id"])
+    try:
+        results = sp.current_user_top_tracks(limit=10, time_range='medium_term')
+        tracks = []
+        for t in results.get("items", []):
+            tracks.append({
+                "id": t["id"],
+                "uri": t["uri"],
+                "name": t["name"],
+                "artist": ", ".join(a["name"] for a in t["artists"]),
+                "album": t["album"]["name"],
+                "album_art": t["album"]["images"][0]["url"] if t["album"]["images"] else None,
+                "duration_ms": t["duration_ms"]
+            })
+        return {"tracks": tracks}
+    except Exception as e:
+        return {"tracks": [], "error": str(e)}
+
+@api_router.get("/users/{user_id}/profile")
+async def get_user_profile(user_id: str, request: Request):
+    await get_user_from_header(request)
+    target = await db.users.find_one({"id": user_id}, {"_id": 0, "spotify_access_token": 0, "spotify_refresh_token": 0, "token_expires_at": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    playlists = await db.playlists.find({"owner_id": user_id, "is_public": True}, {"_id": 0}).to_list(20)
+    target["public_playlists"] = playlists
+    target["followers_count"] = await db.friendships.count_documents({"target_id": user_id, "status": "accepted"})
+    target["following_count"] = await db.friendships.count_documents({"user_id": user_id, "status": "accepted"})
+    return target
+
+@api_router.get("/users/search")
+async def search_users(q: str, request: Request):
+    await get_user_from_header(request)
+    users = await db.users.find(
+        {"display_name": {"$regex": q, "$options": "i"}},
+        {"_id": 0, "spotify_access_token": 0, "spotify_refresh_token": 0, "token_expires_at": 0}
+    ).to_list(20)
+    return {"users": users}
+
+# ============================================================
+# FRIENDS / SOCIAL ROUTES
+# ============================================================
+
+@api_router.post("/friends/request")
+async def send_friend_request(data: FriendRequest, request: Request):
+    user = await get_user_from_header(request)
+    if user["id"] == data.target_user_id:
+        raise HTTPException(status_code=400, detail="Cannot friend yourself")
+
+    target = await db.users.find_one({"id": data.target_user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    existing = await db.friendships.find_one({
+        "$or": [
+            {"user_id": user["id"], "target_id": data.target_user_id},
+            {"user_id": data.target_user_id, "target_id": user["id"]}
+        ]
+    })
+    if existing:
+        return {"status": existing.get("status", "exists"), "message": "Friendship already exists"}
+
+    now = datetime.now(timezone.utc).isoformat()
+    await db.friendships.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "target_id": data.target_user_id,
+        "status": "pending",
+        "created_at": now
+    })
+    await log_activity(user["id"], "friend_request_sent", {"target_id": data.target_user_id, "target_name": target.get("display_name")})
+    return {"status": "pending", "message": "Friend request sent"}
+
+@api_router.post("/friends/accept")
+async def accept_friend_request(data: FriendRequest, request: Request):
+    user = await get_user_from_header(request)
+    result = await db.friendships.update_one(
+        {"user_id": data.target_user_id, "target_id": user["id"], "status": "pending"},
+        {"$set": {"status": "accepted", "accepted_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="No pending request found")
+    await log_activity(user["id"], "friend_request_accepted", {"from_user_id": data.target_user_id})
+    return {"status": "accepted"}
+
+@api_router.post("/friends/reject")
+async def reject_friend_request(data: FriendRequest, request: Request):
+    user = await get_user_from_header(request)
+    await db.friendships.delete_one({"user_id": data.target_user_id, "target_id": user["id"], "status": "pending"})
+    return {"status": "rejected"}
+
+@api_router.delete("/friends/{friend_id}")
+async def remove_friend(friend_id: str, request: Request):
+    user = await get_user_from_header(request)
+    await db.friendships.delete_one({
+        "$or": [
+            {"user_id": user["id"], "target_id": friend_id},
+            {"user_id": friend_id, "target_id": user["id"]}
+        ]
+    })
+    return {"status": "removed"}
+
+@api_router.get("/friends")
+async def get_friends(request: Request):
+    user = await get_user_from_header(request)
+    friendships = await db.friendships.find({
+        "$or": [{"user_id": user["id"]}, {"target_id": user["id"]}],
+        "status": "accepted"
+    }, {"_id": 0}).to_list(100)
+
+    friend_ids = []
+    for f in friendships:
+        fid = f["target_id"] if f["user_id"] == user["id"] else f["user_id"]
+        friend_ids.append(fid)
+
+    friends = []
+    for fid in friend_ids:
+        friend = await db.users.find_one({"id": fid}, {"_id": 0, "spotify_access_token": 0, "spotify_refresh_token": 0, "token_expires_at": 0})
+        if friend:
+            friends.append(friend)
+
+    return {"friends": friends}
+
+@api_router.get("/friends/pending")
+async def get_pending_requests(request: Request):
+    user = await get_user_from_header(request)
+    pending = await db.friendships.find({"target_id": user["id"], "status": "pending"}, {"_id": 0}).to_list(50)
+
+    requests = []
+    for p in pending:
+        requester = await db.users.find_one({"id": p["user_id"]}, {"_id": 0, "spotify_access_token": 0, "spotify_refresh_token": 0, "token_expires_at": 0})
+        if requester:
+            requests.append({**p, "requester": requester})
+
+    return {"requests": requests}
+
+@api_router.get("/friends/{user_id}/status")
+async def get_friendship_status(user_id: str, request: Request):
+    user = await get_user_from_header(request)
+    friendship = await db.friendships.find_one({
+        "$or": [
+            {"user_id": user["id"], "target_id": user_id},
+            {"user_id": user_id, "target_id": user["id"]}
+        ]
+    }, {"_id": 0})
+    if not friendship:
+        return {"status": "none"}
+    return {"status": friendship["status"], "direction": "sent" if friendship["user_id"] == user["id"] else "received"}
+
+# ============================================================
+# PLAYLIST ROUTES
+# ============================================================
+
+@api_router.post("/playlists")
+async def create_playlist(data: PlaylistCreate, request: Request):
+    user = await get_user_from_header(request)
+    now = datetime.now(timezone.utc).isoformat()
+    playlist_id = str(uuid.uuid4())
+
+    playlist_doc = {
+        "id": playlist_id,
+        "name": data.name,
+        "description": data.description,
+        "is_public": data.is_public,
+        "owner_id": user["id"],
+        "owner_name": user.get("display_name", ""),
+        "owner_avatar": user.get("avatar_url"),
+        "tracks": [],
+        "members": [{"user_id": user["id"], "role": "owner", "display_name": user.get("display_name")}],
+        "track_count": 0,
+        "synced_spotify_id": None,
+        "created_at": now,
+        "updated_at": now
+    }
+    await db.playlists.insert_one(playlist_doc)
+    playlist_doc.pop("_id", None)
+    await log_activity(user["id"], "playlist_created", {"playlist_id": playlist_id, "name": data.name})
+    return playlist_doc
+
+@api_router.get("/playlists")
+async def list_playlists(request: Request):
+    user = await get_user_from_header(request)
+    playlists = await db.playlists.find(
+        {"$or": [{"owner_id": user["id"]}, {"members.user_id": user["id"]}]},
+        {"_id": 0}
+    ).to_list(50)
+    return {"playlists": playlists}
+
+@api_router.get("/playlists/{playlist_id}")
+async def get_playlist(playlist_id: str, request: Request):
+    await get_user_from_header(request)
+    playlist = await db.playlists.find_one({"id": playlist_id}, {"_id": 0})
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    return playlist
+
+@api_router.put("/playlists/{playlist_id}")
+async def update_playlist(playlist_id: str, data: PlaylistUpdate, request: Request):
+    user = await get_user_from_header(request)
+    playlist = await db.playlists.find_one({"id": playlist_id}, {"_id": 0})
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+
+    member = next((m for m in playlist.get("members", []) if m["user_id"] == user["id"] and m["role"] in ["owner", "editor"]), None)
+    if not member:
+        raise HTTPException(status_code=403, detail="No edit permission")
+
+    update_fields = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    if data.name is not None:
+        update_fields["name"] = data.name
+    if data.description is not None:
+        update_fields["description"] = data.description
+    if data.is_public is not None:
+        update_fields["is_public"] = data.is_public
+
+    await db.playlists.update_one({"id": playlist_id}, {"$set": update_fields})
+    return {"status": "updated"}
+
+@api_router.delete("/playlists/{playlist_id}")
+async def delete_playlist(playlist_id: str, request: Request):
+    user = await get_user_from_header(request)
+    playlist = await db.playlists.find_one({"id": playlist_id}, {"_id": 0})
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    if playlist["owner_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Only owner can delete")
+    await db.playlists.delete_one({"id": playlist_id})
+    return {"status": "deleted"}
+
+@api_router.post("/playlists/{playlist_id}/tracks")
+async def add_track_to_playlist(playlist_id: str, data: PlaylistTrackAdd, request: Request):
+    user = await get_user_from_header(request)
+    playlist = await db.playlists.find_one({"id": playlist_id}, {"_id": 0})
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+
+    member = next((m for m in playlist.get("members", []) if m["user_id"] == user["id"] and m["role"] in ["owner", "editor"]), None)
+    if not member:
+        raise HTTPException(status_code=403, detail="No edit permission")
+
+    track_entry = {
+        "id": str(uuid.uuid4()),
+        "track_uri": data.track_uri,
+        "name": data.name,
+        "artist": data.artist,
+        "album_art": data.album_art,
+        "duration_ms": data.duration_ms,
+        "added_by": user["id"],
+        "added_by_name": user.get("display_name", ""),
+        "added_at": datetime.now(timezone.utc).isoformat()
+    }
+
+    await db.playlists.update_one(
+        {"id": playlist_id},
+        {"$push": {"tracks": track_entry}, "$inc": {"track_count": 1}, "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    await log_activity(user["id"], "track_added", {"playlist_id": playlist_id, "track_name": data.name})
+    return track_entry
+
+@api_router.delete("/playlists/{playlist_id}/tracks/{track_id}")
+async def remove_track_from_playlist(playlist_id: str, track_id: str, request: Request):
+    user = await get_user_from_header(request)
+    playlist = await db.playlists.find_one({"id": playlist_id}, {"_id": 0})
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+
+    member = next((m for m in playlist.get("members", []) if m["user_id"] == user["id"] and m["role"] in ["owner", "editor"]), None)
+    if not member:
+        raise HTTPException(status_code=403, detail="No edit permission")
+
+    await db.playlists.update_one(
+        {"id": playlist_id},
+        {"$pull": {"tracks": {"id": track_id}}, "$inc": {"track_count": -1}, "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    return {"status": "removed"}
+
+@api_router.post("/playlists/{playlist_id}/members")
+async def add_playlist_member(playlist_id: str, request: Request):
+    user = await get_user_from_header(request)
+    body = await request.json()
+    target_user_id = body.get("user_id")
+    role = body.get("role", "editor")
+
+    playlist = await db.playlists.find_one({"id": playlist_id}, {"_id": 0})
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    if playlist["owner_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Only owner can add members")
+
+    target = await db.users.find_one({"id": target_user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    already = next((m for m in playlist.get("members", []) if m["user_id"] == target_user_id), None)
+    if already:
+        return {"status": "already_member"}
+
+    await db.playlists.update_one(
+        {"id": playlist_id},
+        {"$push": {"members": {"user_id": target_user_id, "role": role, "display_name": target.get("display_name", "")}}}
+    )
+    return {"status": "added"}
+
+@api_router.post("/playlists/{playlist_id}/sync-to-spotify")
+async def sync_playlist_to_spotify(playlist_id: str, request: Request):
+    user = await get_user_from_header(request)
+    playlist = await db.playlists.find_one({"id": playlist_id}, {"_id": 0})
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+
+    sp = await get_user_spotify_client(user["id"])
+    try:
+        track_uris = [t["track_uri"] for t in playlist.get("tracks", [])]
+        if playlist.get("synced_spotify_id"):
+            sp.playlist_replace_items(playlist["synced_spotify_id"], track_uris[:100])
+            return {"status": "synced", "spotify_id": playlist["synced_spotify_id"]}
+        else:
+            sp_user = sp.me()
+            new_pl = sp.user_playlist_create(sp_user["id"], playlist["name"], public=playlist.get("is_public", True), description=playlist.get("description", ""))
+            if track_uris:
+                sp.playlist_add_items(new_pl["id"], track_uris[:100])
+            await db.playlists.update_one({"id": playlist_id}, {"$set": {"synced_spotify_id": new_pl["id"]}})
+            return {"status": "created_and_synced", "spotify_id": new_pl["id"]}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@api_router.get("/playlists/import-spotify")
+async def import_spotify_playlists(request: Request):
+    user = await get_user_from_header(request)
+    sp = await get_user_spotify_client(user["id"])
+    try:
+        results = sp.current_user_playlists(limit=50)
+        playlists = []
+        for p in results.get("items", []):
+            playlists.append({
+                "spotify_id": p["id"],
+                "name": p["name"],
+                "description": p.get("description", ""),
+                "image": p["images"][0]["url"] if p.get("images") else None,
+                "track_count": p["tracks"]["total"],
+                "owner": p["owner"]["display_name"],
+                "is_collaborative": p.get("collaborative", False)
+            })
+        return {"playlists": playlists}
+    except Exception as e:
+        return {"playlists": [], "error": str(e)}
+
+@api_router.post("/playlists/import-spotify/{spotify_id}")
+async def import_spotify_playlist(spotify_id: str, request: Request):
+    user = await get_user_from_header(request)
+    sp = await get_user_spotify_client(user["id"])
+    try:
+        sp_playlist = sp.playlist(spotify_id)
+        now = datetime.now(timezone.utc).isoformat()
+        playlist_id = str(uuid.uuid4())
+
+        tracks = []
+        for item in sp_playlist["tracks"]["items"][:100]:
+            t = item.get("track")
+            if not t:
+                continue
+            tracks.append({
+                "id": str(uuid.uuid4()),
+                "track_uri": t["uri"],
+                "name": t["name"],
+                "artist": ", ".join(a["name"] for a in t["artists"]),
+                "album_art": t["album"]["images"][0]["url"] if t["album"]["images"] else None,
+                "duration_ms": t["duration_ms"],
+                "added_by": user["id"],
+                "added_by_name": user.get("display_name", ""),
+                "added_at": now
+            })
+
+        playlist_doc = {
+            "id": playlist_id,
+            "name": sp_playlist["name"],
+            "description": sp_playlist.get("description", ""),
+            "is_public": True,
+            "owner_id": user["id"],
+            "owner_name": user.get("display_name", ""),
+            "owner_avatar": user.get("avatar_url"),
+            "tracks": tracks,
+            "members": [{"user_id": user["id"], "role": "owner", "display_name": user.get("display_name")}],
+            "track_count": len(tracks),
+            "synced_spotify_id": spotify_id,
+            "created_at": now,
+            "updated_at": now
+        }
+        await db.playlists.insert_one(playlist_doc)
+        playlist_doc.pop("_id", None)
+        return playlist_doc
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# ============================================================
+# ACTIVITY ROUTES
+# ============================================================
+
+@api_router.get("/activity")
+async def get_activity_feed(request: Request):
+    user = await get_user_from_header(request)
+
+    friendships = await db.friendships.find({
+        "$or": [{"user_id": user["id"]}, {"target_id": user["id"]}],
+        "status": "accepted"
+    }, {"_id": 0}).to_list(100)
+
+    friend_ids = [user["id"]]
+    for f in friendships:
+        fid = f["target_id"] if f["user_id"] == user["id"] else f["user_id"]
+        friend_ids.append(fid)
+
+    activities = await db.activity_log.find(
+        {"user_id": {"$in": friend_ids}},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+
+    for act in activities:
+        u = await db.users.find_one({"id": act["user_id"]}, {"_id": 0, "spotify_access_token": 0, "spotify_refresh_token": 0, "token_expires_at": 0})
+        if u:
+            act["user_display_name"] = u.get("display_name", "")
+            act["user_avatar"] = u.get("avatar_url")
+
+    return {"activities": activities}
+
+@api_router.get("/activity/me")
+async def get_my_activity(request: Request):
+    user = await get_user_from_header(request)
+    activities = await db.activity_log.find(
+        {"user_id": user["id"]},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(30)
+    return {"activities": activities}
 
 # ============================================================
 # ROOM ROUTES
 # ============================================================
-
-import random
-import string
 
 def generate_room_code(length=6):
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
 @api_router.post("/rooms")
 async def create_room(room_data: RoomCreate, request: Request):
-    """Create a new JAM room."""
     user = await get_user_from_header(request)
-
     now = datetime.now(timezone.utc).isoformat()
     room_id = str(uuid.uuid4())
     code = generate_room_code()
 
-    # Ensure unique code
     while await db.rooms.find_one({"code": code, "is_active": True}):
         code = generate_room_code()
 
@@ -390,15 +816,13 @@ async def create_room(room_data: RoomCreate, request: Request):
         "created_at": now
     }
     await db.rooms.insert_one(room_doc)
-
-    # Return without _id
     room_doc.pop("_id", None)
     room_doc["participant_count"] = 1
+    await log_activity(user["id"], "room_created", {"room_id": room_id, "room_name": room_data.name})
     return room_doc
 
 @api_router.get("/rooms")
 async def list_rooms():
-    """List all active JAM rooms."""
     rooms = await db.rooms.find({"is_active": True}, {"_id": 0}).to_list(100)
     for room in rooms:
         room["participant_count"] = len(room.get("participants", []))
@@ -406,7 +830,6 @@ async def list_rooms():
 
 @api_router.get("/rooms/{room_id}")
 async def get_room(room_id: str):
-    """Get details of a specific room."""
     room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
     if not room:
         raise HTTPException(status_code=404, detail="Room not found")
@@ -415,55 +838,46 @@ async def get_room(room_id: str):
 
 @api_router.post("/rooms/{room_id}/join")
 async def join_room(room_id: str, request: Request):
-    """Join a JAM room."""
     user = await get_user_from_header(request)
     room = await db.rooms.find_one({"id": room_id, "is_active": True}, {"_id": 0})
-
     if not room:
         raise HTTPException(status_code=404, detail="Room not found or inactive")
-
     if len(room.get("participants", [])) >= room.get("max_participants", 10):
         raise HTTPException(status_code=400, detail="Room is full")
-
     if user["id"] not in room.get("participants", []):
-        await db.rooms.update_one(
-            {"id": room_id},
-            {"$addToSet": {"participants": user["id"]}}
-        )
-
+        await db.rooms.update_one({"id": room_id}, {"$addToSet": {"participants": user["id"]}})
     updated_room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
     updated_room["participant_count"] = len(updated_room.get("participants", []))
+    await log_activity(user["id"], "room_joined", {"room_id": room_id})
     return updated_room
 
 @api_router.post("/rooms/{room_id}/leave")
 async def leave_room(room_id: str, request: Request):
-    """Leave a JAM room."""
     user = await get_user_from_header(request)
-
-    await db.rooms.update_one(
-        {"id": room_id},
-        {"$pull": {"participants": user["id"]}}
-    )
-
+    await db.rooms.update_one({"id": room_id}, {"$pull": {"participants": user["id"]}})
     room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
     if room and len(room.get("participants", [])) == 0:
         await db.rooms.update_one({"id": room_id}, {"$set": {"is_active": False}})
-
     return {"status": "left"}
 
 @api_router.delete("/rooms/{room_id}")
 async def delete_room(room_id: str, request: Request):
-    """Delete a JAM room (host only)."""
     user = await get_user_from_header(request)
     room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
-
     if not room:
         raise HTTPException(status_code=404, detail="Room not found")
     if room["host_id"] != user["id"]:
         raise HTTPException(status_code=403, detail="Only the host can delete this room")
-
     await db.rooms.update_one({"id": room_id}, {"$set": {"is_active": False}})
     return {"status": "deleted"}
+
+@api_router.get("/rooms/join-by-code/{code}")
+async def get_room_by_code(code: str):
+    room = await db.rooms.find_one({"code": code.upper(), "is_active": True}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    room["participant_count"] = len(room.get("participants", []))
+    return room
 
 # ============================================================
 # PLAYBACK ROUTES
@@ -471,10 +885,8 @@ async def delete_room(room_id: str, request: Request):
 
 @api_router.get("/playback/search")
 async def search_tracks(q: str, request: Request):
-    """Search Spotify tracks."""
     user = await get_user_from_header(request)
     sp = await get_user_spotify_client(user["id"])
-
     results = sp.search(q, limit=20, type='track')
     tracks = []
     for item in results.get("tracks", {}).get("items", []):
@@ -490,10 +902,8 @@ async def search_tracks(q: str, request: Request):
 
 @api_router.post("/playback/play")
 async def play_track(play_data: PlayRequest, request: Request):
-    """Start playback of a track."""
     user = await get_user_from_header(request)
     sp = await get_user_spotify_client(user["id"])
-
     try:
         kwargs = {"uris": [play_data.track_uri], "position_ms": play_data.position_ms}
         if play_data.device_id:
@@ -505,10 +915,8 @@ async def play_track(play_data: PlayRequest, request: Request):
 
 @api_router.post("/playback/pause")
 async def pause_playback(request: Request):
-    """Pause playback."""
     user = await get_user_from_header(request)
     sp = await get_user_spotify_client(user["id"])
-
     try:
         sp.pause_playback()
         return {"status": "paused"}
@@ -517,10 +925,8 @@ async def pause_playback(request: Request):
 
 @api_router.post("/playback/seek")
 async def seek_playback(seek_data: SeekRequest, request: Request):
-    """Seek to position."""
     user = await get_user_from_header(request)
     sp = await get_user_spotify_client(user["id"])
-
     try:
         sp.seek_track(seek_data.position_ms, device_id=seek_data.device_id)
         return {"status": "seeked", "position_ms": seek_data.position_ms}
@@ -529,10 +935,8 @@ async def seek_playback(seek_data: SeekRequest, request: Request):
 
 @api_router.get("/playback/state")
 async def get_playback_state(request: Request):
-    """Get current playback state."""
     user = await get_user_from_header(request)
     sp = await get_user_spotify_client(user["id"])
-
     try:
         state = sp.current_playback()
         if not state:
@@ -557,10 +961,7 @@ async def get_playback_state(request: Request):
 # ============================================================
 
 class RoomManager:
-    """Manages WebSocket connections for JAM rooms."""
-
     def __init__(self):
-        # room_id -> {user_id: WebSocket}
         self.active_connections: Dict[str, Dict[str, WebSocket]] = {}
 
     async def connect(self, room_id: str, user_id: str, websocket: WebSocket):
@@ -568,14 +969,12 @@ class RoomManager:
         if room_id not in self.active_connections:
             self.active_connections[room_id] = {}
         self.active_connections[room_id][user_id] = websocket
-        logger.info(f"User {user_id} connected to room {room_id}")
 
     def disconnect(self, room_id: str, user_id: str):
         if room_id in self.active_connections:
             self.active_connections[room_id].pop(user_id, None)
             if not self.active_connections[room_id]:
                 del self.active_connections[room_id]
-        logger.info(f"User {user_id} disconnected from room {room_id}")
 
     async def broadcast(self, room_id: str, message: dict, exclude_user: str = None):
         if room_id not in self.active_connections:
@@ -608,9 +1007,6 @@ room_manager = RoomManager()
 
 @app.websocket("/api/ws/jam/{room_id}")
 async def websocket_jam(websocket: WebSocket, room_id: str, token: str = Query(None)):
-    """WebSocket endpoint for JAM room real-time sync."""
-
-    # Authenticate via JWT token in query param
     if not token:
         await websocket.close(code=4001, reason="Missing token")
         return
@@ -622,32 +1018,23 @@ async def websocket_jam(websocket: WebSocket, room_id: str, token: str = Query(N
         await websocket.close(code=4001, reason="Invalid token")
         return
 
-    # Check room exists
     room = await db.rooms.find_one({"id": room_id, "is_active": True}, {"_id": 0})
     if not room:
         await websocket.close(code=4004, reason="Room not found")
         return
 
-    # Connect
     await room_manager.connect(room_id, user_id, websocket)
 
-    # Get user info for broadcast
     user = await db.users.find_one({"id": user_id}, {"_id": 0, "spotify_access_token": 0, "spotify_refresh_token": 0, "token_expires_at": 0})
 
-    # Notify others
     await room_manager.broadcast(room_id, {
         "type": "participant_joined",
         "user": {"id": user["id"], "display_name": user.get("display_name"), "avatar_url": user.get("avatar_url")}
     }, exclude_user=user_id)
 
-    # Send current room state to new user
     if room.get("current_track"):
-        await room_manager.send_to_user(room_id, user_id, {
-            "type": "sync",
-            **room["current_track"]
-        })
+        await room_manager.send_to_user(room_id, user_id, {"type": "sync", **room["current_track"]})
 
-    # Send connected participants list
     connected = room_manager.get_connected_users(room_id)
     participants_info = []
     for uid in connected:
@@ -655,10 +1042,7 @@ async def websocket_jam(websocket: WebSocket, room_id: str, token: str = Query(N
         if p:
             participants_info.append({"id": p["id"], "display_name": p.get("display_name"), "avatar_url": p.get("avatar_url")})
 
-    await room_manager.send_to_user(room_id, user_id, {
-        "type": "participants_list",
-        "participants": participants_info
-    })
+    await room_manager.send_to_user(room_id, user_id, {"type": "participants_list", "participants": participants_info})
 
     try:
         while True:
@@ -666,7 +1050,6 @@ async def websocket_jam(websocket: WebSocket, room_id: str, token: str = Query(N
             msg_type = data.get("type")
 
             if msg_type == "play":
-                # Host plays a track - broadcast to all
                 track_data = {
                     "uri": data.get("track_uri"),
                     "name": data.get("name", ""),
@@ -721,7 +1104,6 @@ async def websocket_jam(websocket: WebSocket, room_id: str, token: str = Query(N
             elif msg_type == "heartbeat":
                 await room_manager.send_to_user(room_id, user_id, {"type": "heartbeat_ack"})
 
-            # Refresh room state for next iteration
             room = await db.rooms.find_one({"id": room_id, "is_active": True}, {"_id": 0})
             if not room:
                 await websocket.close(code=4004, reason="Room closed")
@@ -730,10 +1112,7 @@ async def websocket_jam(websocket: WebSocket, room_id: str, token: str = Query(N
     except WebSocketDisconnect:
         room_manager.disconnect(room_id, user_id)
         await db.rooms.update_one({"id": room_id}, {"$pull": {"participants": user_id}})
-        await room_manager.broadcast(room_id, {
-            "type": "participant_left",
-            "user_id": user_id
-        })
+        await room_manager.broadcast(room_id, {"type": "participant_left", "user_id": user_id})
     except Exception as e:
         logger.error(f"WebSocket error for user {user_id} in room {room_id}: {e}")
         room_manager.disconnect(room_id, user_id)
@@ -744,13 +1123,10 @@ async def websocket_jam(websocket: WebSocket, room_id: str, token: str = Query(N
 
 @api_router.get("/download/project")
 async def download_project():
-    """Generate and download the Notify project as a ZIP file."""
     project_root = Path(__file__).parent.parent
     buffer = io.BytesIO()
-
     skip_dirs = {'.git', 'node_modules', '__pycache__', '.next', 'build', 'dist', '.emergent', '.cache', 'test_reports'}
     skip_files = {'.DS_Store', 'Thumbs.db'}
-
     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
         for root, dirs, files in os.walk(project_root):
             dirs[:] = [d for d in dirs if d not in skip_dirs]
@@ -763,13 +1139,8 @@ async def download_project():
                     zf.write(file_path, f"Notify/{arcname}")
                 except Exception:
                     pass
-
     buffer.seek(0)
-    return StreamingResponse(
-        buffer,
-        media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=Notify.zip"}
-    )
+    return StreamingResponse(buffer, media_type="application/zip", headers={"Content-Disposition": "attachment; filename=Notify.zip"})
 
 # ============================================================
 # HEALTH CHECK
@@ -777,7 +1148,7 @@ async def download_project():
 
 @api_router.get("/")
 async def root():
-    return {"message": "Notify API v1.0", "status": "running"}
+    return {"message": "Notify API v2.0", "status": "running"}
 
 @api_router.get("/health")
 async def health():
@@ -789,18 +1160,22 @@ async def health():
 
 @app.on_event("startup")
 async def startup():
-    """Create MongoDB indexes on startup."""
     await db.users.create_index("spotify_id", unique=True)
     await db.users.create_index("id", unique=True)
     await db.rooms.create_index("id", unique=True)
     await db.rooms.create_index("code")
     await db.rooms.create_index("is_active")
-    logger.info("Notify API started. MongoDB indexes created.")
+    await db.playlists.create_index("id", unique=True)
+    await db.playlists.create_index("owner_id")
+    await db.friendships.create_index([("user_id", 1), ("target_id", 1)])
+    await db.friendships.create_index("status")
+    await db.activity_log.create_index("user_id")
+    await db.activity_log.create_index("created_at")
+    logger.info("Notify API v2.0 started. MongoDB indexes created.")
 
 @app.on_event("shutdown")
 async def shutdown():
     client.close()
     logger.info("Notify API shutdown.")
 
-# Include router
 app.include_router(api_router)

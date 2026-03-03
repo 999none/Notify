@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 
 class NotifyAPITester:
-    def __init__(self, base_url="https://2805ab5c-e907-4e9f-b1cb-913dcb6dd82e.preview.emergentagent.com/api"):
+    def __init__(self, base_url="https://0b7873e0-e354-4980-bd5f-3bf52951ee28.preview.emergentagent.com/api"):
         self.base_url = base_url
         self.tests_run = 0
         self.tests_passed = 0
@@ -78,7 +78,7 @@ class NotifyAPITester:
             if auth_url and 'accounts.spotify.com' in auth_url:
                 print(f"   ✅ Valid Spotify OAuth URL returned")
                 # Check if redirect_uri is correct (URL-encoded in OAuth URL)
-                expected_redirect_encoded = "https%3A%2F%2F2805ab5c-e907-4e9f-b1cb-913dcb6dd82e.preview.emergentagent.com%2Fapi%2Fauth%2Fspotify%2Fcallback"
+                expected_redirect_encoded = "https%3A%2F%2F0b7873e0-e354-4980-bd5f-3bf52951ee28.preview.emergentagent.com%2Fapi%2Fauth%2Fspotify%2Fcallback"
                 if expected_redirect_encoded in auth_url:
                     print(f"   ✅ Correct redirect_uri found in OAuth URL")
                     return True

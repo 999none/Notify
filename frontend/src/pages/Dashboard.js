@@ -1,33 +1,46 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { roomAPI } from '../api';
-import { Plus, Users, Radio, LogOut, Music, Crown, Copy, Check } from 'lucide-react';
+import { roomAPI, playlistAPI, friendAPI, activityAPI } from '../api';
+import AppLayout from '../components/AppLayout';
+import { Plus, Users, Radio, Music, Crown, Copy, Check, ListMusic, Activity, ArrowRight } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Input } from '../components/ui/input';
 import { toast } from 'sonner';
 
 export default function Dashboard() {
-  const { user, isPremium, logout } = useAuth();
+  const { user, isPremium } = useAuth();
   const navigate = useNavigate();
   const [rooms, setRooms] = useState([]);
+  const [playlists, setPlaylists] = useState([]);
+  const [friends, setFriends] = useState([]);
+  const [activities, setActivities] = useState([]);
   const [newRoomName, setNewRoomName] = useState('');
+  const [joinCode, setJoinCode] = useState('');
   const [isCreating, setIsCreating] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [copiedCode, setCopiedCode] = useState(null);
 
   useEffect(() => {
-    fetchRooms();
-    const interval = setInterval(fetchRooms, 10000);
+    fetchAll();
+    const interval = setInterval(() => roomAPI.list().then(r => setRooms(r.data)).catch(() => {}), 10000);
     return () => clearInterval(interval);
   }, []);
 
-  const fetchRooms = async () => {
+  const fetchAll = async () => {
     try {
-      const res = await roomAPI.list();
-      setRooms(res.data);
+      const [roomsRes, playlistsRes, friendsRes, activityRes] = await Promise.allSettled([
+        roomAPI.list(),
+        playlistAPI.list(),
+        friendAPI.list(),
+        activityAPI.feed()
+      ]);
+      if (roomsRes.status === 'fulfilled') setRooms(roomsRes.value.data);
+      if (playlistsRes.status === 'fulfilled') setPlaylists(playlistsRes.value.data.playlists || []);
+      if (friendsRes.status === 'fulfilled') setFriends(friendsRes.value.data.friends || []);
+      if (activityRes.status === 'fulfilled') setActivities(activityRes.value.data.activities?.slice(0, 5) || []);
     } catch (err) {
-      console.error('Failed to fetch rooms:', err);
+      console.error(err);
     }
   };
 
@@ -47,6 +60,17 @@ export default function Dashboard() {
     }
   };
 
+  const joinByCode = async () => {
+    if (!joinCode.trim()) return;
+    try {
+      const res = await roomAPI.getByCode(joinCode.trim());
+      await roomAPI.join(res.data.id);
+      navigate(`/jam/${res.data.id}`);
+    } catch (err) {
+      toast.error('Room not found');
+    }
+  };
+
   const joinRoom = async (roomId) => {
     try {
       await roomAPI.join(roomId);
@@ -59,68 +83,58 @@ export default function Dashboard() {
   const copyCode = (code) => {
     navigator.clipboard.writeText(code);
     setCopiedCode(code);
-    toast.success('Room code copied!');
+    toast.success('Code copied!');
     setTimeout(() => setCopiedCode(null), 2000);
   };
 
+  const getActivityText = (act) => {
+    const map = {
+      'room_created': 'created a JAM room',
+      'room_joined': 'joined a JAM room',
+      'playlist_created': 'created a playlist',
+      'track_added': 'added a track',
+      'friend_request_sent': 'sent a friend request',
+      'friend_request_accepted': 'accepted a friend request',
+      'account_created': 'joined Notify',
+    };
+    return map[act.action] || act.action;
+  };
+
   return (
-    <div className="min-h-screen bg-[#050505]" data-testid="dashboard-page">
-      {/* Ambient glow */}
-      <div className="fixed top-0 left-1/2 -translate-x-1/2 w-[600px] h-[400px] bg-[#00C2FF]/5 rounded-full blur-[120px] pointer-events-none" />
+    <AppLayout>
+      <div className="p-6 lg:p-10 max-w-7xl" data-testid="dashboard-page">
+        {/* Ambient */}
+        <div className="fixed top-0 right-0 w-[500px] h-[400px] bg-[#4DA6FF]/4 rounded-full blur-[140px] pointer-events-none" />
 
-      {/* Top bar */}
-      <header className="glass-heavy sticky top-0 z-50 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-[#00C2FF] flex items-center justify-center">
-            <Radio className="w-5 h-5 text-black" strokeWidth={2.5} />
-          </div>
-          <span className="text-lg font-bold tracking-tight" style={{ fontFamily: 'Manrope' }}>Notify</span>
-        </div>
-        <div className="flex items-center gap-4">
-          {user?.avatar_url && (
-            <img src={user.avatar_url} alt="" className="w-8 h-8 rounded-full border border-white/10" />
-          )}
-          <span className="text-sm text-[#A1A1AA] hidden sm:block">{user?.display_name}</span>
-          {isPremium && (
-            <span className="flex items-center gap-1 text-xs text-[#00C2FF] bg-[#00C2FF]/10 px-2 py-1 rounded-full">
-              <Crown className="w-3 h-3" /> Premium
-            </span>
-          )}
-          <button onClick={logout} className="p-2 rounded-full hover:bg-white/10 transition-colors" data-testid="logout-btn">
-            <LogOut className="w-5 h-5 text-[#A1A1AA]" strokeWidth={1.5} />
-          </button>
-        </div>
-      </header>
-
-      {/* Main content */}
-      <main className="max-w-6xl mx-auto px-6 py-12">
         {/* Welcome */}
-        <div className="mb-12 animate-fade-in-up">
-          <h1 className="text-4xl md:text-5xl font-bold tracking-tight mb-3" style={{ fontFamily: 'Manrope' }}>
-            Welcome back, <span className="text-[#00C2FF]">{user?.display_name?.split(' ')[0] || 'User'}</span>
+        <div className="mb-10 animate-fade-in-up">
+          <h1 className="text-4xl md:text-5xl font-bold tracking-tight mb-2" style={{ fontFamily: 'Syne' }}>
+            Welcome, <span className="text-[#4DA6FF]">{user?.display_name?.split(' ')[0] || 'User'}</span>
           </h1>
-          <p className="text-lg text-[#A1A1AA]">Ready to JAM?</p>
+          <p className="text-lg text-[#94A3B8]">Ready to JAM?</p>
         </div>
 
-        {/* Bento grid */}
-        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6 stagger-children">
-          {/* Create Room card */}
+        {/* Top row: Create + Join */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8 stagger-children">
+          {/* Create Room */}
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
             <DialogTrigger asChild>
               <div
-                className="glass-card p-8 cursor-pointer glass-card-interactive col-span-1 md:col-span-1 lg:col-span-1 flex flex-col items-center justify-center text-center min-h-[200px] border-dashed border-[#00C2FF]/30 hover:border-[#00C2FF]/60"
+                className="glass-card p-8 cursor-pointer glass-card-interactive flex items-center gap-6 border-dashed border-[#4DA6FF]/30 hover:border-[#4DA6FF]/60"
                 data-testid="create-room-card"
               >
-                <div className="w-16 h-16 rounded-2xl bg-[#00C2FF]/10 flex items-center justify-center mb-4">
-                  <Plus className="w-8 h-8 text-[#00C2FF]" strokeWidth={1.5} />
+                <div className="w-14 h-14 rounded-2xl bg-[#4DA6FF]/10 flex items-center justify-center flex-shrink-0">
+                  <Plus className="w-7 h-7 text-[#4DA6FF]" strokeWidth={1.5} />
                 </div>
-                <h3 className="text-lg font-semibold mb-1" style={{ fontFamily: 'Manrope' }}>Create a JAM</h3>
-                <p className="text-sm text-[#52525B]">Start a new room</p>
+                <div>
+                  <h3 className="text-lg font-semibold" style={{ fontFamily: 'Syne' }}>Create a JAM</h3>
+                  <p className="text-sm text-[#475569]">Start a new synchronized room</p>
+                </div>
               </div>
             </DialogTrigger>
             <DialogContent className="glass-heavy border-white/10 text-white sm:max-w-md">
               <DialogHeader>
-                <DialogTitle className="text-xl font-bold" style={{ fontFamily: 'Manrope' }}>Create a JAM Room</DialogTitle>
+                <DialogTitle className="text-xl font-bold" style={{ fontFamily: 'Syne' }}>Create a JAM Room</DialogTitle>
               </DialogHeader>
               <div className="mt-4 space-y-4">
                 <Input
@@ -143,93 +157,154 @@ export default function Dashboard() {
             </DialogContent>
           </Dialog>
 
-          {/* Profile card */}
-          <div className="glass-card p-6 col-span-1 md:col-span-2 lg:col-span-1" data-testid="profile-card">
-            <div className="flex items-center gap-4 mb-4">
-              {user?.avatar_url ? (
-                <img src={user.avatar_url} alt="" className="w-14 h-14 rounded-2xl border border-white/10" />
-              ) : (
-                <div className="w-14 h-14 rounded-2xl bg-white/10 flex items-center justify-center">
-                  <Music className="w-7 h-7 text-[#A1A1AA]" />
-                </div>
-              )}
-              <div>
-                <h3 className="font-semibold text-lg" style={{ fontFamily: 'Manrope' }}>{user?.display_name}</h3>
-                <p className="text-sm text-[#A1A1AA]">{user?.email}</p>
+          {/* Join by code */}
+          <div className="glass-card p-8 flex items-center gap-6" data-testid="join-room-card">
+            <div className="w-14 h-14 rounded-2xl bg-[#7CC3FF]/10 flex items-center justify-center flex-shrink-0">
+              <Radio className="w-7 h-7 text-[#7CC3FF]" strokeWidth={1.5} />
+            </div>
+            <div className="flex-1">
+              <h3 className="text-lg font-semibold mb-3" style={{ fontFamily: 'Syne' }}>Join by Code</h3>
+              <div className="flex gap-2">
+                <Input
+                  placeholder="Enter code..."
+                  value={joinCode}
+                  onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+                  onKeyDown={(e) => e.key === 'Enter' && joinByCode()}
+                  className="bg-white/5 border-white/10 text-white placeholder:text-white/30 rounded-xl mono text-[#4DA6FF] uppercase tracking-wider"
+                  data-testid="join-code-input"
+                />
+                <button onClick={joinByCode} className="btn-notify px-4" data-testid="join-code-btn">
+                  Join
+                </button>
               </div>
             </div>
-            {!isPremium && (
-              <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl px-4 py-3 text-sm text-yellow-400">
-                Spotify Premium required to participate in JAM rooms
+          </div>
+        </div>
+
+        {/* Main grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 stagger-children">
+          {/* Active Rooms */}
+          <div className="lg:col-span-2">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold" style={{ fontFamily: 'Syne' }}>Active JAM Rooms</h2>
+              <button onClick={() => navigate('/jam-rooms')} className="text-sm text-[#4DA6FF] hover:text-[#7CC3FF] flex items-center gap-1" data-testid="view-all-rooms">
+                View all <ArrowRight className="w-4 h-4" />
+              </button>
+            </div>
+            {rooms.length === 0 ? (
+              <div className="glass-card p-10 text-center" data-testid="empty-rooms">
+                <Radio className="w-12 h-12 text-[#475569] mb-4 mx-auto" strokeWidth={1} />
+                <h3 className="text-lg font-semibold mb-1" style={{ fontFamily: 'Syne' }}>No active JAMs</h3>
+                <p className="text-sm text-[#475569]">Be the first to create a room!</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {rooms.slice(0, 4).map((room) => (
+                  <div key={room.id} className="glass-card p-5 glass-card-interactive" data-testid={`room-card-${room.id}`}>
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="min-w-0">
+                        <h3 className="font-semibold truncate" style={{ fontFamily: 'Syne' }}>{room.name}</h3>
+                        <p className="text-xs text-[#475569] mt-1">by {room.host_name}</p>
+                      </div>
+                      <button
+                        onClick={() => copyCode(room.code)}
+                        className="flex items-center gap-1 text-xs bg-white/5 border border-white/10 rounded-lg px-2 py-1 hover:bg-white/10 transition-colors flex-shrink-0"
+                        data-testid={`copy-code-${room.code}`}
+                      >
+                        {copiedCode === room.code ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+                        <span className="mono text-[#4DA6FF]">{room.code}</span>
+                      </button>
+                    </div>
+                    {room.current_track && (
+                      <div className="flex items-center gap-3 mb-3 bg-white/5 rounded-xl p-2">
+                        {room.current_track.album_art && <img src={room.current_track.album_art} alt="" className="w-8 h-8 rounded-lg" />}
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium truncate">{room.current_track.name}</p>
+                          <p className="text-xs text-[#475569] truncate">{room.current_track.artist}</p>
+                        </div>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 text-sm text-[#94A3B8]">
+                        <Users className="w-4 h-4" />
+                        <span>{room.participant_count || 0}/{room.max_participants}</span>
+                      </div>
+                      <button onClick={() => joinRoom(room.id)} className="text-sm font-semibold text-[#4DA6FF] hover:text-[#7CC3FF] transition-colors" data-testid={`join-room-${room.id}`}>
+                        Join
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>
 
-          {/* Stats card */}
-          <div className="glass-card p-6 col-span-1 lg:col-span-2" data-testid="stats-card">
-            <h3 className="text-sm font-bold uppercase tracking-widest text-[#52525B] mb-4">Active Rooms</h3>
-            <div className="flex items-baseline gap-2">
-              <span className="text-5xl font-bold text-[#00C2FF]" style={{ fontFamily: 'Manrope' }}>{rooms.length}</span>
-              <span className="text-[#A1A1AA]">JAM{rooms.length !== 1 ? 's' : ''} live</span>
-            </div>
-          </div>
-
-          {/* Room cards */}
-          {rooms.map((room) => (
-            <div key={room.id} className="glass-card p-6 glass-card-interactive col-span-1" data-testid={`room-card-${room.id}`}>
-              <div className="flex items-start justify-between mb-4">
+          {/* Right col: Stats + Activity */}
+          <div className="space-y-6">
+            {/* Stats */}
+            <div className="glass-card p-6" data-testid="stats-card">
+              <h3 className="text-xs font-bold uppercase tracking-widest text-[#475569] mb-4">Overview</h3>
+              <div className="grid grid-cols-3 gap-4 text-center">
                 <div>
-                  <h3 className="font-semibold text-lg truncate" style={{ fontFamily: 'Manrope' }}>{room.name}</h3>
-                  <p className="text-xs text-[#52525B] mt-1">by {room.host_name}</p>
+                  <p className="text-2xl font-bold text-[#4DA6FF]" style={{ fontFamily: 'Syne' }}>{rooms.length}</p>
+                  <p className="text-xs text-[#475569]">Rooms</p>
                 </div>
-                <button
-                  onClick={() => copyCode(room.code)}
-                  className="flex items-center gap-1 text-xs bg-white/5 border border-white/10 rounded-lg px-2 py-1 hover:bg-white/10 transition-colors"
-                  data-testid={`copy-code-${room.code}`}
-                >
-                  {copiedCode === room.code ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
-                  <span className="mono text-[#00C2FF]">{room.code}</span>
+                <div>
+                  <p className="text-2xl font-bold text-[#7CC3FF]" style={{ fontFamily: 'Syne' }}>{playlists.length}</p>
+                  <p className="text-xs text-[#475569]">Playlists</p>
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-[#4DA6FF]" style={{ fontFamily: 'Syne' }}>{friends.length}</p>
+                  <p className="text-xs text-[#475569]">Friends</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Recent Activity */}
+            <div className="glass-card p-6" data-testid="activity-preview">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-xs font-bold uppercase tracking-widest text-[#475569]">Recent Activity</h3>
+                <button onClick={() => navigate('/activity')} className="text-xs text-[#4DA6FF]">
+                  View all
                 </button>
               </div>
-
-              {room.current_track && (
-                <div className="flex items-center gap-3 mb-4 bg-white/5 rounded-xl p-3">
-                  {room.current_track.album_art && (
-                    <img src={room.current_track.album_art} alt="" className="w-10 h-10 rounded-lg" />
-                  )}
-                  <div className="truncate">
-                    <p className="text-sm font-medium truncate">{room.current_track.name}</p>
-                    <p className="text-xs text-[#52525B] truncate">{room.current_track.artist}</p>
-                  </div>
+              {activities.length === 0 ? (
+                <p className="text-sm text-[#475569] text-center py-4">No activity yet</p>
+              ) : (
+                <div className="space-y-3">
+                  {activities.map((act, i) => (
+                    <div key={i} className="flex items-center gap-3">
+                      {act.user_avatar ? (
+                        <img src={act.user_avatar} alt="" className="w-7 h-7 rounded-full" />
+                      ) : (
+                        <div className="w-7 h-7 rounded-full bg-[#4DA6FF]/20 flex items-center justify-center text-xs font-bold text-[#4DA6FF]">
+                          {(act.user_display_name || '?')[0]}
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <p className="text-sm truncate">
+                          <span className="font-medium">{act.user_display_name}</span>
+                          <span className="text-[#94A3B8]"> {getActivityText(act)}</span>
+                        </p>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
+            </div>
 
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-sm text-[#A1A1AA]">
-                  <Users className="w-4 h-4" />
-                  <span>{room.participant_count || 0}/{room.max_participants}</span>
+            {/* Premium gate */}
+            {!isPremium && (
+              <div className="glass-card p-5 border-yellow-500/20" data-testid="premium-notice">
+                <div className="flex items-center gap-2 text-yellow-400 text-sm font-medium">
+                  <Crown className="w-4 h-4" />
+                  <span>Spotify Premium required for JAM playback</span>
                 </div>
-                <button
-                  onClick={() => joinRoom(room.id)}
-                  className="text-sm font-semibold text-[#00C2FF] hover:text-[#33CFFF] transition-colors"
-                  data-testid={`join-room-${room.id}`}
-                >
-                  Join JAM
-                </button>
               </div>
-            </div>
-          ))}
-
-          {/* Empty state */}
-          {rooms.length === 0 && (
-            <div className="glass-card p-8 col-span-1 md:col-span-2 lg:col-span-3 flex flex-col items-center justify-center text-center" data-testid="empty-rooms">
-              <Radio className="w-12 h-12 text-[#52525B] mb-4" strokeWidth={1} />
-              <h3 className="text-lg font-semibold mb-1" style={{ fontFamily: 'Manrope' }}>No active JAMs</h3>
-              <p className="text-sm text-[#52525B]">Be the first to create a room!</p>
-            </div>
-          )}
+            )}
+          </div>
         </div>
-      </main>
-    </div>
+      </div>
+    </AppLayout>
   );
 }
