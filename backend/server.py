@@ -557,6 +557,79 @@ async def list_playlists(request: Request):
     ).to_list(50)
     return {"playlists": playlists}
 
+# IMPORTANT: Static routes MUST be defined BEFORE dynamic {playlist_id} routes
+# to prevent FastAPI from capturing "import-spotify" as a playlist_id
+
+@api_router.get("/playlists/import-spotify")
+async def import_spotify_playlists(request: Request):
+    user = await get_user_from_header(request)
+    sp = await get_user_spotify_client(user["id"])
+    try:
+        results = sp.current_user_playlists(limit=50)
+        playlists = []
+        for p in results.get("items", []):
+            playlists.append({
+                "spotify_id": p["id"],
+                "name": p["name"],
+                "description": p.get("description", ""),
+                "image": p["images"][0]["url"] if p.get("images") else None,
+                "track_count": p["tracks"]["total"],
+                "owner": p["owner"]["display_name"],
+                "is_collaborative": p.get("collaborative", False)
+            })
+        return {"playlists": playlists}
+    except Exception as e:
+        return {"playlists": [], "error": str(e)}
+
+@api_router.post("/playlists/import-spotify/{spotify_id}")
+async def import_spotify_playlist(spotify_id: str, request: Request):
+    user = await get_user_from_header(request)
+    sp = await get_user_spotify_client(user["id"])
+    try:
+        sp_playlist = sp.playlist(spotify_id)
+        now = datetime.now(timezone.utc).isoformat()
+        playlist_id = str(uuid.uuid4())
+
+        tracks = []
+        for item in sp_playlist["tracks"]["items"][:100]:
+            t = item.get("track")
+            if not t:
+                continue
+            tracks.append({
+                "id": str(uuid.uuid4()),
+                "track_uri": t["uri"],
+                "name": t["name"],
+                "artist": ", ".join(a["name"] for a in t["artists"]),
+                "album_art": t["album"]["images"][0]["url"] if t["album"]["images"] else None,
+                "duration_ms": t["duration_ms"],
+                "added_by": user["id"],
+                "added_by_name": user.get("display_name", ""),
+                "added_at": now
+            })
+
+        playlist_doc = {
+            "id": playlist_id,
+            "name": sp_playlist["name"],
+            "description": sp_playlist.get("description", ""),
+            "is_public": True,
+            "owner_id": user["id"],
+            "owner_name": user.get("display_name", ""),
+            "owner_avatar": user.get("avatar_url"),
+            "tracks": tracks,
+            "members": [{"user_id": user["id"], "role": "owner", "display_name": user.get("display_name")}],
+            "track_count": len(tracks),
+            "synced_spotify_id": spotify_id,
+            "created_at": now,
+            "updated_at": now
+        }
+        await db.playlists.insert_one(playlist_doc)
+        playlist_doc.pop("_id", None)
+        return playlist_doc
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# Dynamic {playlist_id} routes AFTER static routes
+
 @api_router.get("/playlists/{playlist_id}")
 async def get_playlist(playlist_id: str, request: Request):
     await get_user_from_header(request)
@@ -692,74 +765,6 @@ async def sync_playlist_to_spotify(playlist_id: str, request: Request):
                 sp.playlist_add_items(new_pl["id"], track_uris[:100])
             await db.playlists.update_one({"id": playlist_id}, {"$set": {"synced_spotify_id": new_pl["id"]}})
             return {"status": "created_and_synced", "spotify_id": new_pl["id"]}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-@api_router.get("/playlists/import-spotify")
-async def import_spotify_playlists(request: Request):
-    user = await get_user_from_header(request)
-    sp = await get_user_spotify_client(user["id"])
-    try:
-        results = sp.current_user_playlists(limit=50)
-        playlists = []
-        for p in results.get("items", []):
-            playlists.append({
-                "spotify_id": p["id"],
-                "name": p["name"],
-                "description": p.get("description", ""),
-                "image": p["images"][0]["url"] if p.get("images") else None,
-                "track_count": p["tracks"]["total"],
-                "owner": p["owner"]["display_name"],
-                "is_collaborative": p.get("collaborative", False)
-            })
-        return {"playlists": playlists}
-    except Exception as e:
-        return {"playlists": [], "error": str(e)}
-
-@api_router.post("/playlists/import-spotify/{spotify_id}")
-async def import_spotify_playlist(spotify_id: str, request: Request):
-    user = await get_user_from_header(request)
-    sp = await get_user_spotify_client(user["id"])
-    try:
-        sp_playlist = sp.playlist(spotify_id)
-        now = datetime.now(timezone.utc).isoformat()
-        playlist_id = str(uuid.uuid4())
-
-        tracks = []
-        for item in sp_playlist["tracks"]["items"][:100]:
-            t = item.get("track")
-            if not t:
-                continue
-            tracks.append({
-                "id": str(uuid.uuid4()),
-                "track_uri": t["uri"],
-                "name": t["name"],
-                "artist": ", ".join(a["name"] for a in t["artists"]),
-                "album_art": t["album"]["images"][0]["url"] if t["album"]["images"] else None,
-                "duration_ms": t["duration_ms"],
-                "added_by": user["id"],
-                "added_by_name": user.get("display_name", ""),
-                "added_at": now
-            })
-
-        playlist_doc = {
-            "id": playlist_id,
-            "name": sp_playlist["name"],
-            "description": sp_playlist.get("description", ""),
-            "is_public": True,
-            "owner_id": user["id"],
-            "owner_name": user.get("display_name", ""),
-            "owner_avatar": user.get("avatar_url"),
-            "tracks": tracks,
-            "members": [{"user_id": user["id"], "role": "owner", "display_name": user.get("display_name")}],
-            "track_count": len(tracks),
-            "synced_spotify_id": spotify_id,
-            "created_at": now,
-            "updated_at": now
-        }
-        await db.playlists.insert_one(playlist_doc)
-        playlist_doc.pop("_id", None)
-        return playlist_doc
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -906,18 +911,22 @@ async def get_room_by_code(code: str):
 async def search_tracks(q: str, request: Request):
     user = await get_user_from_header(request)
     sp = await get_user_spotify_client(user["id"])
-    results = sp.search(q, limit=20, type='track')
-    tracks = []
-    for item in results.get("tracks", {}).get("items", []):
-        tracks.append({
-            "uri": item["uri"],
-            "name": item["name"],
-            "artist": ", ".join(a["name"] for a in item["artists"]),
-            "album": item["album"]["name"],
-            "album_art": item["album"]["images"][0]["url"] if item["album"]["images"] else None,
-            "duration_ms": item["duration_ms"]
-        })
-    return {"tracks": tracks}
+    try:
+        results = sp.search(q, limit=20, type='track')
+        tracks = []
+        for item in results.get("tracks", {}).get("items", []):
+            tracks.append({
+                "uri": item["uri"],
+                "name": item["name"],
+                "artist": ", ".join(a["name"] for a in item["artists"]),
+                "album": item["album"]["name"],
+                "album_art": item["album"]["images"][0]["url"] if item["album"]["images"] else None,
+                "duration_ms": item["duration_ms"]
+            })
+        return {"tracks": tracks}
+    except Exception as e:
+        logger.error(f"Search failed for user {user['id']}: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
 
 @api_router.post("/playback/play")
 async def play_track(play_data: PlayRequest, request: Request):

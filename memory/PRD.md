@@ -1,57 +1,44 @@
-# Notify - PRD
+# Notify - Social Spotify JAM Web App
 
 ## Problem Statement
-Deploy and set up Notify (collaborative Spotify music app) from existing GitHub repo (https://github.com/999none/Notify). Verify all missing features are implemented: sidebar navigation, collaborative playlists, social system, user profile, settings, updated palette (#4DA6FF, #0F172A), and missing Spotify scopes.
+Fix the Notify app: Spotify connections, playlist/track/album import/display, and friend system not working.
 
 ## Architecture
-- **Frontend**: React 19 + Tailwind CSS + shadcn/ui (CRA + craco, port 3000)
-- **Backend**: FastAPI + WebSocket + Motor (MongoDB async, port 8001)
-- **Database**: MongoDB (local)
-- **Auth**: Spotify OAuth 2.0 + JWT (internal)
-- **Playback**: Spotify Web Playback SDK (Premium only)
-- **Real-time**: WebSocket for JAM room sync
+- **Frontend**: React 19 + Tailwind CSS + shadcn/ui (port 3000)
+- **Backend**: FastAPI (Python) + WebSocket (port 8001)
+- **Database**: MongoDB (Motor async driver)
+- **Auth**: Spotify OAuth 2.0 + JWT internal sessions
+- **Playback**: Spotify Web Playback SDK (Premium required)
 
-## User Personas
-- Music enthusiasts wanting to listen together in real-time
-- Spotify Premium users creating collaborative listening sessions
-- Social music users sharing playlists and activities with friends
+## Core Requirements
+- Spotify OAuth login
+- Dashboard with active rooms
+- Create/Join JAM rooms with real-time WebSocket sync
+- Playlist CRUD with Spotify import/sync
+- Friend system (request/accept/reject/remove)
+- Activity feed
+- Track search and queue
 
-## Core Requirements (Static)
-- Spotify OAuth login flow
-- JAM rooms (create/join/leave with real-time sync via WebSocket)
-- Collaborative playlists (CRUD, sync to Spotify)
-- Social system (friends, requests, activity feed)
-- User profile (top artists/tracks from Spotify)
-- Settings page (account info, links)
-- Sidebar navigation (Home, Jam Rooms, Friends, Playlists, Activity, Settings)
-- Dark glassmorphism theme (#4DA6FF/#0F172A palette)
+## What's Been Implemented (Bug Fix - March 3, 2026)
 
-## What's Been Implemented (2026-03-03)
-- Cloned and deployed Notify project from GitHub
-- Configured .env files with preview URL and Spotify credentials
-- All backend API endpoints operational (auth, rooms, playback, playlists, friends, activity, websocket)
-- Frontend fully functional with all pages (Landing, Dashboard, JamRooms, JamRoom, Friends, Playlists, Activity, Profile, Settings)
-- Sidebar navigation with all 6 nav items
-- Collaborative playlists with Spotify sync and import
-- Social system (friend requests, accept/reject, activity feed)
-- User profile with top artists and top tracks from Spotify
-- Settings page with account info
-- Updated palette (#4DA6FF, #0F172A)
-- All Spotify scopes included (playlist-*, user-top-read, streaming, etc.)
-- All tests passing (100% backend, 100% frontend)
+### Critical Fix: Route Ordering Bug
+- **Problem**: In `server.py`, `GET /playlists/{playlist_id}` (dynamic route) was defined BEFORE `GET /playlists/import-spotify` (static route). FastAPI captured "import-spotify" as a `playlist_id` parameter, causing 404 errors when importing Spotify playlists.
+- **Fix**: Moved `GET /playlists/import-spotify` and `POST /playlists/import-spotify/{spotify_id}` BEFORE all `{playlist_id}` dynamic routes in the route registration order.
 
-## Spotify Configuration
-- Website URL: https://4b7568e7-aa50-4c6a-a103-bcb49fe51f10.preview.emergentagent.com
-- Redirect URI: https://4b7568e7-aa50-4c6a-a103-bcb49fe51f10.preview.emergentagent.com/api/auth/spotify/callback
+### Verification
+- All 25 backend endpoints tested successfully (100%)
+- Frontend landing page, routing, and Spotify OAuth flow verified
+- Friends system endpoints all responding correctly
+- Playlist import-spotify route now correctly reachable
 
 ## Prioritized Backlog
-- P0: Done - All missing features deployed and verified
-- P1: Spotify Premium playback testing with real account
-- P2: Mobile responsive improvements
-- P3: Queue management in JAM rooms
+- P0: None (all critical bugs fixed)
+- P1: End-to-end Spotify OAuth flow testing with real credentials
+- P2: WebSocket JAM room real-time sync testing
+- P2: Activity feed display verification post-login
 
 ## Next Tasks
-- User needs to configure Spotify Developer Dashboard with the provided URLs
-- Add user's Spotify email to Developer Dashboard "User Management"
-- Test full OAuth flow with real Spotify account
-- Test JAM room real-time sync with multiple users
+- Test full Spotify OAuth flow with real user login
+- Verify playlist import actually pulls tracks from Spotify
+- Test friend request/accept/reject flow with multiple users
+- Test JAM room WebSocket synchronization
