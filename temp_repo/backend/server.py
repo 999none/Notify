@@ -1141,8 +1141,7 @@ async def websocket_jam(websocket: WebSocket, room_id: str, token: str = Query(N
 # ============================================================
 
 @api_router.get("/download/project")
-async def download_project(request: Request):
-    await get_user_from_header(request)
+async def download_project():
     project_root = Path(__file__).parent.parent
     buffer = io.BytesIO()
     skip_dirs = {'.git', 'node_modules', '__pycache__', '.next', 'build', 'dist', '.emergent', '.cache', 'test_reports'}

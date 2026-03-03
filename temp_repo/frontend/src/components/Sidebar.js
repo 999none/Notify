@@ -2,7 +2,7 @@ import React from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import {
-  Home, Radio, Users, ListMusic, Activity, Settings, LogOut, Crown, ChevronLeft, ChevronRight, Download
+  Home, Radio, Users, ListMusic, Activity, Settings, LogOut, Crown, ChevronLeft, ChevronRight
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -13,7 +13,6 @@ const navItems = [
   { to: '/playlists', icon: ListMusic, label: 'Playlists' },
   { to: '/activity', icon: Activity, label: 'Activity' },
   { to: '/settings', icon: Settings, label: 'Settings' },
-  { to: '/download', icon: Download, label: 'Download' },
 ];
 
 export default function Sidebar() {
