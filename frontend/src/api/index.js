@@ -36,6 +36,7 @@ export const authAPI = {
 export const userAPI = {
   getMe: () => api.get('/users/me'),
   checkPremium: () => api.get('/users/me/premium'),
+  getSpotifyToken: () => api.get('/users/me/spotify-token'),
   getTopArtists: () => api.get('/users/me/top-artists'),
   getTopTracks: () => api.get('/users/me/top-tracks'),
   getProfile: (userId) => api.get(`/users/${userId}/profile`),

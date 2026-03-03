@@ -1,13 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { getWebSocketUrl } from '../api';
 
-/**
- * Hook for WebSocket JAM room connection.
- * Handles connect, disconnect, reconnect with exponential backoff.
- *
- * Usage:
- * const { isConnected, participants, messages, sendMessage } = useWebSocket(roomId);
- */
 export const useWebSocket = (roomId) => {
   const [isConnected, setIsConnected] = useState(false);
   const [participants, setParticipants] = useState([]);
@@ -16,34 +9,61 @@ export const useWebSocket = (roomId) => {
   const [lastEvent, setLastEvent] = useState(null);
   const wsRef = useRef(null);
   const reconnectAttempts = useRef(0);
-  const maxReconnectAttempts = 5;
+  const maxReconnectAttempts = 8;
   const reconnectTimeoutRef = useRef(null);
+  const heartbeatIntervalRef = useRef(null);
+  const isUnmountedRef = useRef(false);
+
+  const cleanup = useCallback(() => {
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current);
+      heartbeatIntervalRef.current = null;
+    }
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+  }, []);
 
   const connect = useCallback(() => {
-    if (!roomId) return;
+    if (!roomId || isUnmountedRef.current) return;
+
+    const token = localStorage.getItem('notify_token');
+    if (!token) return;
+
+    // Close existing connection
+    if (wsRef.current) {
+      try { wsRef.current.close(); } catch (e) {}
+    }
+    cleanup();
 
     const url = getWebSocketUrl(roomId);
-    const ws = new WebSocket(url);
+    let ws;
+    try {
+      ws = new WebSocket(url);
+    } catch (err) {
+      console.error('[Notify WS] Failed to create WebSocket:', err);
+      return;
+    }
     wsRef.current = ws;
 
     ws.onopen = () => {
+      if (isUnmountedRef.current) { ws.close(); return; }
       console.log('[Notify WS] Connected to room:', roomId);
       setIsConnected(true);
       reconnectAttempts.current = 0;
 
       // Start heartbeat
-      const heartbeatInterval = setInterval(() => {
+      heartbeatIntervalRef.current = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'heartbeat' }));
+          try { ws.send(JSON.stringify({ type: 'heartbeat' })); } catch (e) {}
         }
-      }, 5000);
-      ws._heartbeatInterval = heartbeatInterval;
+      }, 15000);
     };
 
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-
         switch (data.type) {
           case 'sync':
             setLastSync(data);
@@ -81,7 +101,7 @@ export const useWebSocket = (roomId) => {
           case 'heartbeat_ack':
             break;
           default:
-            console.log('[Notify WS] Unknown message type:', data.type);
+            break;
         }
       } catch (err) {
         console.error('[Notify WS] Parse error:', err);
@@ -91,12 +111,17 @@ export const useWebSocket = (roomId) => {
     ws.onclose = (event) => {
       console.log('[Notify WS] Disconnected:', event.code, event.reason);
       setIsConnected(false);
-      if (ws._heartbeatInterval) clearInterval(ws._heartbeatInterval);
+      cleanup();
+
+      if (isUnmountedRef.current) return;
+
+      // Do not reconnect on auth/room errors
+      if (event.code === 4001 || event.code === 4004 || event.code === 1000) return;
 
       // Reconnect with exponential backoff
-      if (reconnectAttempts.current < maxReconnectAttempts && event.code !== 4001 && event.code !== 4004) {
-        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
-        console.log(`[Notify WS] Reconnecting in ${delay}ms (attempt ${reconnectAttempts.current + 1})`);
+      if (reconnectAttempts.current < maxReconnectAttempts) {
+        const delay = Math.min(2000 * Math.pow(1.5, reconnectAttempts.current), 30000);
+        console.log(`[Notify WS] Reconnecting in ${Math.round(delay)}ms (attempt ${reconnectAttempts.current + 1})`);
         reconnectTimeoutRef.current = setTimeout(() => {
           reconnectAttempts.current++;
           connect();
@@ -104,38 +129,31 @@ export const useWebSocket = (roomId) => {
       }
     };
 
-    ws.onerror = (error) => {
-      console.error('[Notify WS] Error:', error);
+    ws.onerror = () => {
+      // onclose will handle reconnection
     };
-  }, [roomId]);
+  }, [roomId, cleanup]);
 
   useEffect(() => {
+    isUnmountedRef.current = false;
     connect();
     return () => {
-      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      isUnmountedRef.current = true;
+      cleanup();
       if (wsRef.current) {
-        if (wsRef.current._heartbeatInterval) clearInterval(wsRef.current._heartbeatInterval);
-        wsRef.current.close();
+        try { wsRef.current.close(1000, 'Component unmounted'); } catch (e) {}
       }
     };
-  }, [connect]);
+  }, [connect, cleanup]);
 
   const sendMessage = useCallback((message) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(message));
+      try { wsRef.current.send(JSON.stringify(message)); } catch (e) {}
     }
   }, []);
 
   const sendPlay = useCallback((trackUri, name, artist, albumArt, durationMs, positionMs = 0) => {
-    sendMessage({
-      type: 'play',
-      track_uri: trackUri,
-      name,
-      artist,
-      album_art: albumArt,
-      duration_ms: durationMs,
-      position_ms: positionMs,
-    });
+    sendMessage({ type: 'play', track_uri: trackUri, name, artist, album_art: albumArt, duration_ms: durationMs, position_ms: positionMs });
   }, [sendMessage]);
 
   const sendPause = useCallback((positionMs = 0) => {

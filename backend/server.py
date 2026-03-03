@@ -116,7 +116,8 @@ def get_spotify_oauth():
         client_secret=SPOTIFY_CLIENT_SECRET,
         redirect_uri=SPOTIFY_REDIRECT_URI,
         scope=SPOTIFY_SCOPES,
-        show_dialog=True
+        show_dialog=True,
+        cache_handler=spotipy.cache_handler.MemoryCacheHandler()
     )
 
 async def get_user_spotify_client(user_id: str) -> spotipy.Spotify:
@@ -204,7 +205,7 @@ async def spotify_login():
 async def _handle_spotify_code(code: str):
     sp_oauth = get_spotify_oauth()
     try:
-        token_info = sp_oauth.get_access_token(code, as_dict=True)
+        token_info = sp_oauth.get_access_token(code, as_dict=True, check_cache=False)
     except Exception as e:
         logger.error(f"Spotify token exchange failed: {e}")
         raise HTTPException(status_code=400, detail=f"Spotify auth failed: {str(e)}")
@@ -276,7 +277,14 @@ async def spotify_callback_redirect(code: str = None, error: str = None):
     try:
         jwt_token, user_data = await _handle_spotify_code(code)
         user_json = urllib.parse.quote(json.dumps(user_data))
+        # Truncate URL if too long to avoid browser URL limits
         redirect_url = f"{FRONTEND_URL}/auth/callback?token={jwt_token}&user={user_json}"
+        if len(redirect_url) > 4000:
+            redirect_url = f"{FRONTEND_URL}/auth/callback?token={jwt_token}"
+        return RedirectResponse(url=redirect_url)
+    except HTTPException as he:
+        error_msg = he.detail if isinstance(he.detail, str) else str(he.detail)
+        redirect_url = f"{FRONTEND_URL}/auth/callback?error={urllib.parse.quote(error_msg)}"
         return RedirectResponse(url=redirect_url)
     except Exception as e:
         logger.error(f"Spotify callback failed: {e}")
@@ -326,6 +334,17 @@ async def get_me(request: Request):
 async def check_premium(request: Request):
     user = await get_user_from_header(request)
     return {"is_premium": user.get("is_premium", False), "product": user.get("product", "free")}
+
+@api_router.get("/users/me/spotify-token")
+async def get_spotify_token(request: Request):
+    """Get a fresh Spotify access token for the Web Playback SDK."""
+    user = await get_user_from_header(request)
+    sp = await get_user_spotify_client(user["id"])
+    fresh_user = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    return {
+        "access_token": fresh_user.get("spotify_access_token"),
+        "expires_at": fresh_user.get("token_expires_at")
+    }
 
 @api_router.get("/users/me/top-artists")
 async def get_top_artists(request: Request):
