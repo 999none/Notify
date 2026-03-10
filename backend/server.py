@@ -18,14 +18,15 @@ import io
 import re
 import urllib.parse
 import requests as sync_requests
+import socketio
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+mongo_client = AsyncIOMotorClient(mongo_url)
+db = mongo_client[os.environ['DB_NAME']]
 
 # Spotify config
 SPOTIFY_CLIENT_ID = os.environ['SPOTIFY_CLIENT_ID']
@@ -36,17 +37,18 @@ FRONTEND_URL = os.environ['FRONTEND_URL']
 
 SPOTIFY_SCOPES = "user-read-private user-read-email user-read-playback-state user-read-recently-played user-top-read playlist-read-private playlist-read-collaborative streaming user-modify-playback-state"
 
-app = FastAPI()
-api_router = APIRouter(prefix="/api")
-
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Models
+# ─── Socket.IO Setup ───
+sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*', logger=False, engineio_logger=False)
+
+# FastAPI app
+fastapi_app = FastAPI()
+api_router = APIRouter(prefix="/api")
+
+# ─── Models ───
 class UserResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str
@@ -67,7 +69,31 @@ class StatusCheck(BaseModel):
 class StatusCheckCreate(BaseModel):
     client_name: str
 
+class CreateRoomRequest(BaseModel):
+    name: str
 
+class JoinRoomRequest(BaseModel):
+    room_id: str
+
+class AddToQueueRequest(BaseModel):
+    room_id: str
+    track_id: str
+    track_name: str
+    artist: str
+    album: str = ""
+    image: Optional[str] = None
+    duration_ms: int = 0
+    external_url: Optional[str] = None
+
+class VoteRequest(BaseModel):
+    room_id: str
+    queue_item_id: str
+
+class SearchTrackRequest(BaseModel):
+    query: str
+
+
+# ─── Auth Helpers ───
 def get_spotify_oauth():
     return SpotifyOAuth(
         client_id=SPOTIFY_CLIENT_ID,
@@ -77,7 +103,6 @@ def get_spotify_oauth():
         show_dialog=True
     )
 
-
 def create_jwt(user_id: str, spotify_id: str) -> str:
     payload = {
         "user_id": user_id,
@@ -86,7 +111,6 @@ def create_jwt(user_id: str, spotify_id: str) -> str:
     }
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
-
 def decode_jwt(token: str) -> dict:
     try:
         return jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
@@ -94,7 +118,6 @@ def decode_jwt(token: str) -> dict:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
-
 
 async def get_user_from_request(request: Request):
     auth_header = request.headers.get("Authorization", "")
@@ -107,18 +130,13 @@ async def get_user_from_request(request: Request):
         raise HTTPException(status_code=404, detail="User not found")
     return user
 
-
 def get_spotify_client(token_info: dict):
-    sp = spotipy.Spotify(auth=token_info["access_token"])
-    return sp
-
+    return spotipy.Spotify(auth=token_info["access_token"])
 
 async def get_valid_spotify_token(user_id: str):
-    """Get a valid Spotify token, refreshing if needed."""
     token_doc = await db.spotify_tokens.find_one({"user_id": user_id}, {"_id": 0})
     if not token_doc:
         raise HTTPException(status_code=401, detail="Spotify not connected. Please login again.")
-
     sp_oauth = get_spotify_oauth()
     token_info = {
         "access_token": token_doc["access_token"],
@@ -127,7 +145,6 @@ async def get_valid_spotify_token(user_id: str):
         "token_type": token_doc.get("token_type", "Bearer"),
         "scope": token_doc.get("scope", ""),
     }
-
     if sp_oauth.is_token_expired(token_info):
         try:
             new_token = sp_oauth.refresh_access_token(token_doc["refresh_token"])
@@ -144,8 +161,15 @@ async def get_valid_spotify_token(user_id: str):
         except Exception as e:
             logger.error(f"Token refresh failed: {e}")
             raise HTTPException(status_code=401, detail="Spotify session expired. Please login again.")
-
     return token_info
+
+async def get_user_from_token(token: str):
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        user = await db.users.find_one({"id": payload["user_id"]}, {"_id": 0})
+        return user
+    except Exception:
+        return None
 
 
 # ─── Root ───
@@ -153,8 +177,7 @@ async def get_valid_spotify_token(user_id: str):
 async def root():
     return {"message": "Notify API"}
 
-
-# ─── Status (existing) ───
+# ─── Status ───
 @api_router.post("/status", response_model=StatusCheck)
 async def create_status_check(input: StatusCheckCreate):
     status_dict = input.model_dump()
@@ -164,7 +187,6 @@ async def create_status_check(input: StatusCheckCreate):
     _ = await db.status_checks.insert_one(doc)
     return status_obj
 
-
 @api_router.get("/status", response_model=List[StatusCheck])
 async def get_status_checks():
     status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
@@ -173,7 +195,6 @@ async def get_status_checks():
             check['timestamp'] = datetime.fromisoformat(check['timestamp'])
     return status_checks
 
-
 # ─── Auth ───
 @api_router.get("/auth/spotify/login")
 async def spotify_login():
@@ -181,21 +202,17 @@ async def spotify_login():
     auth_url = sp_oauth.get_authorize_url()
     return {"auth_url": auth_url}
 
-
 @api_router.get("/auth/spotify/callback")
 async def spotify_callback(code: str = None, error: str = None):
     if error:
         return RedirectResponse(url=f"{FRONTEND_URL}/?error={error}")
     if not code:
         return RedirectResponse(url=f"{FRONTEND_URL}/?error=no_code")
-
     try:
         sp_oauth = get_spotify_oauth()
         token_info = sp_oauth.get_access_token(code, as_dict=True)
-
         sp = spotipy.Spotify(auth=token_info["access_token"])
         spotify_user = sp.me()
-
         spotify_id = spotify_user.get("id", "")
         display_name = spotify_user.get("display_name", spotify_id)
         email = spotify_user.get("email")
@@ -203,9 +220,7 @@ async def spotify_callback(code: str = None, error: str = None):
         avatar = images[0]["url"] if images else None
         country = spotify_user.get("country")
         subscription = spotify_user.get("product", "free")
-
         existing_user = await db.users.find_one({"spotify_id": spotify_id}, {"_id": 0})
-
         if existing_user:
             await db.users.update_one(
                 {"spotify_id": spotify_id},
@@ -231,8 +246,6 @@ async def spotify_callback(code: str = None, error: str = None):
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
             await db.users.insert_one(user_doc)
-
-        # Store Spotify tokens
         await db.spotify_tokens.update_one(
             {"user_id": user_id},
             {"$set": {
@@ -246,14 +259,11 @@ async def spotify_callback(code: str = None, error: str = None):
             }},
             upsert=True
         )
-
         token = create_jwt(user_id, spotify_id)
         return RedirectResponse(url=f"{FRONTEND_URL}/callback?token={token}")
-
     except Exception as e:
         logger.error(f"Spotify callback error: {e}")
         return RedirectResponse(url=f"{FRONTEND_URL}/?error=auth_failed")
-
 
 @api_router.get("/auth/me", response_model=UserResponse)
 async def get_current_user(request: Request):
@@ -267,7 +277,6 @@ async def get_top_artists(request: Request):
     user = await get_user_from_request(request)
     token_info = await get_valid_spotify_token(user["id"])
     sp = get_spotify_client(token_info)
-
     try:
         results = sp.current_user_top_artists(limit=10, time_range="medium_term")
         artists = []
@@ -285,13 +294,11 @@ async def get_top_artists(request: Request):
         logger.error(f"Top artists error: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch top artists")
 
-
 @api_router.get("/spotify/top-tracks")
 async def get_top_tracks(request: Request):
     user = await get_user_from_request(request)
     token_info = await get_valid_spotify_token(user["id"])
     sp = get_spotify_client(token_info)
-
     try:
         results = sp.current_user_top_tracks(limit=10, time_range="medium_term")
         tracks = []
@@ -310,13 +317,11 @@ async def get_top_tracks(request: Request):
         logger.error(f"Top tracks error: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch top tracks")
 
-
 @api_router.get("/spotify/recently-played")
 async def get_recently_played(request: Request):
     user = await get_user_from_request(request)
     token_info = await get_valid_spotify_token(user["id"])
     sp = get_spotify_client(token_info)
-
     try:
         results = sp.current_user_recently_played(limit=15)
         tracks = []
@@ -336,13 +341,11 @@ async def get_recently_played(request: Request):
         logger.error(f"Recently played error: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch recently played")
 
-
 @api_router.get("/spotify/playlists")
 async def get_playlists(request: Request):
     user = await get_user_from_request(request)
     token_info = await get_valid_spotify_token(user["id"])
     sp = get_spotify_client(token_info)
-
     try:
         results = sp.current_user_playlists(limit=20)
         playlists = []
@@ -361,10 +364,35 @@ async def get_playlists(request: Request):
         logger.error(f"Playlists error: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch playlists")
 
+# ─── Spotify Search ───
+@api_router.get("/spotify/search")
+async def search_spotify_tracks(request: Request, q: str = ""):
+    if not q.strip():
+        return {"tracks": []}
+    user = await get_user_from_request(request)
+    token_info = await get_valid_spotify_token(user["id"])
+    sp = get_spotify_client(token_info)
+    try:
+        results = sp.search(q=q, type="track", limit=10)
+        tracks = []
+        for track in results.get("tracks", {}).get("items", []):
+            tracks.append({
+                "id": track["id"],
+                "name": track["name"],
+                "artist": ", ".join(a["name"] for a in track.get("artists", [])),
+                "album": track.get("album", {}).get("name", ""),
+                "image": track["album"]["images"][0]["url"] if track.get("album", {}).get("images") else None,
+                "duration_ms": track.get("duration_ms", 0),
+                "external_url": track.get("external_urls", {}).get("spotify"),
+            })
+        return {"tracks": tracks}
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to search tracks")
 
-# ─── Alternative Player: YouTube Search ───
+
+# ─── YouTube Search (Alternative Player) ───
 def search_youtube_video(query: str):
-    """Search YouTube for a video and return the first result."""
     try:
         encoded_query = urllib.parse.quote(query)
         url = f"https://www.youtube.com/results?search_query={encoded_query}"
@@ -374,26 +402,16 @@ def search_youtube_video(query: str):
         }
         response = sync_requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
-
-        # Extract video IDs from the page
         video_ids = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"', response.text)
         if not video_ids:
             return None
-
         video_id = video_ids[0]
-
-        # Try to extract title
         title_match = re.search(r'"title":\{"runs":\[\{"text":"([^"]+)"\}', response.text)
         title = title_match.group(1) if title_match else query
-
-        # Try to extract channel name
         channel_matches = re.findall(r'"ownerText":\{"runs":\[\{"text":"([^"]+)"', response.text)
         channel = channel_matches[0] if channel_matches else ""
-
-        # Try to extract duration
         duration_matches = re.findall(r'"simpleText":"(\d+:\d+(?::\d+)?)"', response.text)
         duration = duration_matches[0] if duration_matches else ""
-
         return {
             "video_id": video_id,
             "title": title,
@@ -406,35 +424,25 @@ def search_youtube_video(query: str):
         logger.error(f"YouTube search error: {e}")
         return None
 
-
 @api_router.get("/player/search-youtube")
 async def search_youtube(track_name: str, artist_name: str):
-    """Search YouTube for an alternative version of a track."""
     if not track_name.strip() or not artist_name.strip():
         return {"found": False, "message": "Aucune version alternative disponible"}
-
     query = f"{track_name} {artist_name} official audio"
     result = search_youtube_video(query)
-
     if result:
-        # Verify relevance: check if track name or artist appears in the title
         title_lower = result["title"].lower()
         track_lower = track_name.lower()
         artist_lower = artist_name.lower()
-        # Accept if at least one word from track or artist is in the title
         track_words = [w for w in track_lower.split() if len(w) > 2]
         artist_words = [w for w in artist_lower.split() if len(w) > 2]
         has_match = any(w in title_lower for w in track_words) or any(w in title_lower for w in artist_words)
         if has_match:
             return {"found": True, **result}
-
     return {"found": False, "message": "Aucune version alternative disponible"}
 
-
-# ─── Spotify Access Token for Web Playback SDK ───
 @api_router.get("/player/spotify-token")
 async def get_spotify_access_token(request: Request):
-    """Return Spotify access token for Web Playback SDK (Premium users)."""
     user = await get_user_from_request(request)
     token_info = await get_valid_spotify_token(user["id"])
     return {
@@ -443,17 +451,194 @@ async def get_spotify_access_token(request: Request):
     }
 
 
+# ─── LISTENING ROOMS ───
+
+@api_router.post("/rooms/create")
+async def create_room(body: CreateRoomRequest, request: Request):
+    user = await get_user_from_request(request)
+    room_id = str(uuid.uuid4())[:8]
+    room = {
+        "id": room_id,
+        "name": body.name.strip(),
+        "host_id": user["id"],
+        "host_name": user.get("username", "Unknown"),
+        "host_avatar": user.get("avatar"),
+        "current_track": None,
+        "is_playing": False,
+        "play_started_at": None,
+        "play_position_ms": 0,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.rooms.insert_one(room)
+    # Host auto-joins
+    await db.room_participants.insert_one({
+        "room_id": room_id,
+        "user_id": user["id"],
+        "username": user.get("username", "Unknown"),
+        "avatar": user.get("avatar"),
+        "subscription": user.get("subscription", "free"),
+        "joined_at": datetime.now(timezone.utc).isoformat(),
+    })
+    room.pop("_id", None)
+    return room
+
+@api_router.post("/rooms/join")
+async def join_room(body: JoinRoomRequest, request: Request):
+    user = await get_user_from_request(request)
+    room = await db.rooms.find_one({"id": body.room_id}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    existing = await db.room_participants.find_one({"room_id": body.room_id, "user_id": user["id"]})
+    if not existing:
+        await db.room_participants.insert_one({
+            "room_id": body.room_id,
+            "user_id": user["id"],
+            "username": user.get("username", "Unknown"),
+            "avatar": user.get("avatar"),
+            "subscription": user.get("subscription", "free"),
+            "joined_at": datetime.now(timezone.utc).isoformat(),
+        })
+    return {"message": "Joined room", "room": room}
+
+@api_router.post("/rooms/leave")
+async def leave_room(body: JoinRoomRequest, request: Request):
+    user = await get_user_from_request(request)
+    await db.room_participants.delete_one({"room_id": body.room_id, "user_id": user["id"]})
+    # If host leaves, delete room
+    room = await db.rooms.find_one({"id": body.room_id}, {"_id": 0})
+    if room and room.get("host_id") == user["id"]:
+        await db.rooms.delete_one({"id": body.room_id})
+        await db.room_participants.delete_many({"room_id": body.room_id})
+        await db.room_queue.delete_many({"room_id": body.room_id})
+        return {"message": "Room deleted (host left)"}
+    return {"message": "Left room"}
+
+@api_router.get("/rooms/list")
+async def list_rooms(request: Request):
+    await get_user_from_request(request)
+    rooms = await db.rooms.find({}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    for room in rooms:
+        count = await db.room_participants.count_documents({"room_id": room["id"]})
+        room["participant_count"] = count
+    return {"rooms": rooms}
+
+@api_router.get("/rooms/{room_id}")
+async def get_room(room_id: str, request: Request):
+    await get_user_from_request(request)
+    room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    participants = await db.room_participants.find({"room_id": room_id}, {"_id": 0}).to_list(100)
+    queue = await db.room_queue.find({"room_id": room_id}, {"_id": 0}).to_list(200)
+    queue.sort(key=lambda x: (-x.get("votes", 0), x.get("added_at", "")))
+    room["participants"] = participants
+    room["queue"] = queue
+    return room
+
+@api_router.post("/rooms/queue/add")
+async def add_to_queue(body: AddToQueueRequest, request: Request):
+    user = await get_user_from_request(request)
+    room = await db.rooms.find_one({"id": body.room_id}, {"_id": 0})
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    # Check if track already in queue
+    existing = await db.room_queue.find_one({"room_id": body.room_id, "track_id": body.track_id})
+    if existing:
+        raise HTTPException(status_code=400, detail="Track already in queue")
+    queue_item_id = str(uuid.uuid4())[:8]
+    queue_item = {
+        "id": queue_item_id,
+        "room_id": body.room_id,
+        "track_id": body.track_id,
+        "track_name": body.track_name,
+        "artist": body.artist,
+        "album": body.album,
+        "image": body.image,
+        "duration_ms": body.duration_ms,
+        "external_url": body.external_url,
+        "added_by": user["id"],
+        "added_by_name": user.get("username", "Unknown"),
+        "votes": 0,
+        "voted_by": [],
+        "added_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.room_queue.insert_one(queue_item)
+    queue_item.pop("_id", None)
+    # Search for YouTube alternative
+    yt_result = search_youtube_video(f"{body.track_name} {body.artist} official audio")
+    if yt_result:
+        title_lower = yt_result["title"].lower()
+        track_words = [w for w in body.track_name.lower().split() if len(w) > 2]
+        artist_words = [w for w in body.artist.lower().split() if len(w) > 2]
+        has_match = any(w in title_lower for w in track_words) or any(w in title_lower for w in artist_words)
+        if has_match:
+            await db.track_alternatives.update_one(
+                {"track_id": body.track_id},
+                {"$set": {
+                    "track_id": body.track_id,
+                    "video_id": yt_result["video_id"],
+                    "url": yt_result["url"],
+                    "platform": "youtube",
+                    "title": yt_result["title"],
+                    "channel": yt_result["channel"],
+                    "thumbnail": yt_result["thumbnail"],
+                    "retrieved_at": datetime.now(timezone.utc).isoformat(),
+                }},
+                upsert=True
+            )
+            queue_item["youtube_video_id"] = yt_result["video_id"]
+    return queue_item
+
+@api_router.post("/rooms/queue/vote")
+async def vote_queue_item(body: VoteRequest, request: Request):
+    user = await get_user_from_request(request)
+    item = await db.room_queue.find_one({"id": body.queue_item_id, "room_id": body.room_id}, {"_id": 0})
+    if not item:
+        raise HTTPException(status_code=404, detail="Queue item not found")
+    voted_by = item.get("voted_by", [])
+    if user["id"] in voted_by:
+        # Unvote
+        await db.room_queue.update_one(
+            {"id": body.queue_item_id},
+            {"$inc": {"votes": -1}, "$pull": {"voted_by": user["id"]}}
+        )
+        return {"message": "Vote removed", "votes": item["votes"] - 1}
+    else:
+        await db.room_queue.update_one(
+            {"id": body.queue_item_id},
+            {"$inc": {"votes": 1}, "$push": {"voted_by": user["id"]}}
+        )
+        return {"message": "Voted", "votes": item["votes"] + 1}
+
+@api_router.get("/rooms/{room_id}/queue")
+async def get_room_queue(room_id: str, request: Request):
+    await get_user_from_request(request)
+    queue = await db.room_queue.find({"room_id": room_id}, {"_id": 0}).to_list(200)
+    queue.sort(key=lambda x: (-x.get("votes", 0), x.get("added_at", "")))
+    # Attach YouTube alternatives
+    for item in queue:
+        alt = await db.track_alternatives.find_one({"track_id": item["track_id"]}, {"_id": 0})
+        if alt:
+            item["youtube_video_id"] = alt.get("video_id")
+    return {"queue": queue}
+
+@api_router.get("/rooms/{room_id}/alternative/{track_id}")
+async def get_track_alternative(room_id: str, track_id: str, request: Request):
+    await get_user_from_request(request)
+    alt = await db.track_alternatives.find_one({"track_id": track_id}, {"_id": 0})
+    if alt:
+        return {"found": True, **alt}
+    return {"found": False}
+
+
 # ─── ZIP Download Endpoint ───
 @api_router.get("/download/project-zip")
 async def download_project_zip():
-    """Generate and return a zip file of the complete project."""
     zip_buffer = io.BytesIO()
     project_root = ROOT_DIR.parent
-
     excluded_dirs = {'.git', 'node_modules', '__pycache__', '.next', 'build', 'dist', '.emergent', 'test_reports', 'memory', '.venv', 'venv', '.cache', 'logs'}
     excluded_files = {'.DS_Store', 'Thumbs.db', 'yarn.lock', '.gitignore'}
     excluded_extensions = {'.pyc', '.pyo', '.log'}
-
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
         for root, dirs, files in os.walk(project_root):
             dirs[:] = [d for d in dirs if d not in excluded_dirs]
@@ -468,7 +653,6 @@ async def download_project_zip():
                     zf.write(file_path, arcname)
                 except Exception:
                     pass
-
     zip_buffer.seek(0)
     return StreamingResponse(
         zip_buffer,
@@ -489,10 +673,10 @@ async def get_urls():
     }
 
 
-# Include the router in the main app
-app.include_router(api_router)
+# Include router
+fastapi_app.include_router(api_router)
 
-app.add_middleware(
+fastapi_app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
     allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
@@ -501,6 +685,273 @@ app.add_middleware(
 )
 
 
-@app.on_event("shutdown")
+# ─── Socket.IO Events ───
+# In-memory room state for real-time sync
+room_sids = {}  # room_id -> set of sids
+sid_info = {}  # sid -> {user_id, room_id, username, avatar}
+
+@sio.event
+async def connect(sid, environ):
+    logger.info(f"Socket connected: {sid}")
+
+@sio.event
+async def disconnect(sid):
+    info = sid_info.pop(sid, None)
+    if info:
+        room_id = info.get("room_id")
+        if room_id and room_id in room_sids:
+            room_sids[room_id].discard(sid)
+            sio.leave_room(sid, room_id)
+            # Notify others
+            participants = await _get_room_participants(room_id)
+            await sio.emit("participants_update", {"participants": participants}, room=room_id)
+    logger.info(f"Socket disconnected: {sid}")
+
+@sio.event
+async def join_room(sid, data):
+    token = data.get("token", "")
+    room_id = data.get("room_id", "")
+    user = await get_user_from_token(token)
+    if not user or not room_id:
+        await sio.emit("error", {"message": "Invalid token or room"}, to=sid)
+        return
+    # Join socket.io room
+    sio.enter_room(sid, room_id)
+    if room_id not in room_sids:
+        room_sids[room_id] = set()
+    room_sids[room_id].add(sid)
+    sid_info[sid] = {
+        "user_id": user["id"],
+        "room_id": room_id,
+        "username": user.get("username", "Unknown"),
+        "avatar": user.get("avatar"),
+    }
+    # Ensure in DB participants
+    existing = await db.room_participants.find_one({"room_id": room_id, "user_id": user["id"]})
+    if not existing:
+        await db.room_participants.insert_one({
+            "room_id": room_id,
+            "user_id": user["id"],
+            "username": user.get("username", "Unknown"),
+            "avatar": user.get("avatar"),
+            "subscription": user.get("subscription", "free"),
+            "joined_at": datetime.now(timezone.utc).isoformat(),
+        })
+    # Send current room state
+    room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
+    queue = await db.room_queue.find({"room_id": room_id}, {"_id": 0}).to_list(200)
+    queue.sort(key=lambda x: (-x.get("votes", 0), x.get("added_at", "")))
+    for item in queue:
+        alt = await db.track_alternatives.find_one({"track_id": item["track_id"]}, {"_id": 0})
+        if alt:
+            item["youtube_video_id"] = alt.get("video_id")
+    participants = await _get_room_participants(room_id)
+    await sio.emit("room_state", {
+        "room": room,
+        "queue": queue,
+        "participants": participants,
+    }, to=sid)
+    # Notify everyone of updated participants
+    await sio.emit("participants_update", {"participants": participants}, room=room_id)
+
+@sio.event
+async def leave_room(sid, data):
+    info = sid_info.pop(sid, None)
+    if info:
+        room_id = info.get("room_id")
+        if room_id and room_id in room_sids:
+            room_sids[room_id].discard(sid)
+            sio.leave_room(sid, room_id)
+            participants = await _get_room_participants(room_id)
+            await sio.emit("participants_update", {"participants": participants}, room=room_id)
+
+@sio.event
+async def queue_add(sid, data):
+    """Track added to queue - broadcast updated queue"""
+    room_id = data.get("room_id")
+    if not room_id:
+        return
+    queue = await db.room_queue.find({"room_id": room_id}, {"_id": 0}).to_list(200)
+    queue.sort(key=lambda x: (-x.get("votes", 0), x.get("added_at", "")))
+    for item in queue:
+        alt = await db.track_alternatives.find_one({"track_id": item["track_id"]}, {"_id": 0})
+        if alt:
+            item["youtube_video_id"] = alt.get("video_id")
+    await sio.emit("queue_update", {"queue": queue}, room=room_id)
+
+@sio.event
+async def queue_vote(sid, data):
+    """Vote changed - broadcast updated queue"""
+    room_id = data.get("room_id")
+    if not room_id:
+        return
+    queue = await db.room_queue.find({"room_id": room_id}, {"_id": 0}).to_list(200)
+    queue.sort(key=lambda x: (-x.get("votes", 0), x.get("added_at", "")))
+    for item in queue:
+        alt = await db.track_alternatives.find_one({"track_id": item["track_id"]}, {"_id": 0})
+        if alt:
+            item["youtube_video_id"] = alt.get("video_id")
+    await sio.emit("queue_update", {"queue": queue}, room=room_id)
+
+@sio.event
+async def play_track(sid, data):
+    """Host plays a track - sync to all"""
+    room_id = data.get("room_id")
+    track = data.get("track")
+    info = sid_info.get(sid)
+    if not info or not room_id:
+        return
+    # Verify host
+    room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
+    if not room or room.get("host_id") != info["user_id"]:
+        await sio.emit("error", {"message": "Only the host can control playback"}, to=sid)
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    await db.rooms.update_one(
+        {"id": room_id},
+        {"$set": {
+            "current_track": track,
+            "is_playing": True,
+            "play_started_at": now,
+            "play_position_ms": 0,
+        }}
+    )
+    # Get YouTube alternative for the track
+    youtube_video_id = None
+    alt = await db.track_alternatives.find_one({"track_id": track.get("track_id", track.get("id", ""))}, {"_id": 0})
+    if alt:
+        youtube_video_id = alt.get("video_id")
+    await sio.emit("playback_sync", {
+        "action": "play",
+        "track": track,
+        "position_ms": 0,
+        "timestamp": now,
+        "youtube_video_id": youtube_video_id,
+    }, room=room_id)
+
+@sio.event
+async def pause_track(sid, data):
+    room_id = data.get("room_id")
+    position_ms = data.get("position_ms", 0)
+    info = sid_info.get(sid)
+    if not info or not room_id:
+        return
+    room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
+    if not room or room.get("host_id") != info["user_id"]:
+        return
+    await db.rooms.update_one(
+        {"id": room_id},
+        {"$set": {"is_playing": False, "play_position_ms": position_ms}}
+    )
+    await sio.emit("playback_sync", {
+        "action": "pause",
+        "position_ms": position_ms,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }, room=room_id)
+
+@sio.event
+async def resume_track(sid, data):
+    room_id = data.get("room_id")
+    position_ms = data.get("position_ms", 0)
+    info = sid_info.get(sid)
+    if not info or not room_id:
+        return
+    room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
+    if not room or room.get("host_id") != info["user_id"]:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    await db.rooms.update_one(
+        {"id": room_id},
+        {"$set": {"is_playing": True, "play_started_at": now, "play_position_ms": position_ms}}
+    )
+    await sio.emit("playback_sync", {
+        "action": "resume",
+        "position_ms": position_ms,
+        "timestamp": now,
+    }, room=room_id)
+
+@sio.event
+async def next_track(sid, data):
+    """Skip to next track in queue"""
+    room_id = data.get("room_id")
+    info = sid_info.get(sid)
+    if not info or not room_id:
+        return
+    room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
+    if not room or room.get("host_id") != info["user_id"]:
+        return
+    # Remove current track from queue if present
+    current = room.get("current_track")
+    if current:
+        await db.room_queue.delete_one({"room_id": room_id, "track_id": current.get("track_id", current.get("id", ""))})
+    # Get next track from queue
+    queue = await db.room_queue.find({"room_id": room_id}, {"_id": 0}).to_list(200)
+    queue.sort(key=lambda x: (-x.get("votes", 0), x.get("added_at", "")))
+    if queue:
+        next_item = queue[0]
+        track_data = {
+            "track_id": next_item["track_id"],
+            "track_name": next_item["track_name"],
+            "artist": next_item["artist"],
+            "album": next_item.get("album", ""),
+            "image": next_item.get("image"),
+            "duration_ms": next_item.get("duration_ms", 0),
+            "external_url": next_item.get("external_url"),
+        }
+        now = datetime.now(timezone.utc).isoformat()
+        await db.rooms.update_one(
+            {"id": room_id},
+            {"$set": {
+                "current_track": track_data,
+                "is_playing": True,
+                "play_started_at": now,
+                "play_position_ms": 0,
+            }}
+        )
+        youtube_video_id = None
+        alt = await db.track_alternatives.find_one({"track_id": next_item["track_id"]}, {"_id": 0})
+        if alt:
+            youtube_video_id = alt.get("video_id")
+        # Update queue list
+        remaining_queue = queue[1:] if len(queue) > 1 else []
+        for item in remaining_queue:
+            a = await db.track_alternatives.find_one({"track_id": item["track_id"]}, {"_id": 0})
+            if a:
+                item["youtube_video_id"] = a.get("video_id")
+        await sio.emit("playback_sync", {
+            "action": "play",
+            "track": track_data,
+            "position_ms": 0,
+            "timestamp": now,
+            "youtube_video_id": youtube_video_id,
+        }, room=room_id)
+        await sio.emit("queue_update", {"queue": remaining_queue}, room=room_id)
+    else:
+        # No more tracks
+        await db.rooms.update_one(
+            {"id": room_id},
+            {"$set": {"current_track": None, "is_playing": False, "play_position_ms": 0}}
+        )
+        await sio.emit("playback_sync", {"action": "stop"}, room=room_id)
+        await sio.emit("queue_update", {"queue": []}, room=room_id)
+
+
+async def _get_room_participants(room_id: str):
+    participants = await db.room_participants.find({"room_id": room_id}, {"_id": 0}).to_list(100)
+    # Check which are online via socket
+    online_user_ids = set()
+    for s, info in sid_info.items():
+        if info.get("room_id") == room_id:
+            online_user_ids.add(info["user_id"])
+    for p in participants:
+        p["online"] = p["user_id"] in online_user_ids
+    return participants
+
+
+@fastapi_app.on_event("shutdown")
 async def shutdown_db_client():
-    client.close()
+    mongo_client.close()
+
+
+# Wrap FastAPI with Socket.IO
+app = socketio.ASGIApp(sio, fastapi_app, socketio_path="/socket.io")

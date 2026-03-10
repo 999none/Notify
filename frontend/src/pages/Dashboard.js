@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
   Users,
@@ -17,6 +18,10 @@ import {
   ExternalLink,
   Download,
   Play,
+  Plus,
+  Loader2,
+  Crown,
+  ArrowRight,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
@@ -475,32 +480,147 @@ function FriendsCard() {
   );
 }
 
-// ─── Rooms Card (placeholder) ───
-function RoomsCard() {
+// ─── Rooms Card (functional) ───
+function RoomsCard({ navigate }) {
+  const [rooms, setRooms] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showCreate, setShowCreate] = useState(false);
+  const [roomName, setRoomName] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [joining, setJoining] = useState(null);
+
+  useEffect(() => {
+    fetchRooms();
+  }, []);
+
+  const fetchRooms = async () => {
+    try {
+      const res = await axios.get(`${API}/rooms/list`, { headers: getAuthHeaders() });
+      setRooms(res.data.rooms || []);
+    } catch {
+      setRooms([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCreate = async () => {
+    if (!roomName.trim()) return;
+    setCreating(true);
+    try {
+      const res = await axios.post(`${API}/rooms/create`, { name: roomName.trim() }, { headers: getAuthHeaders() });
+      navigate(`/room/${res.data.id}`);
+    } catch {
+      alert("Erreur lors de la création de la room");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleJoin = async (roomId) => {
+    setJoining(roomId);
+    try {
+      await axios.post(`${API}/rooms/join`, { room_id: roomId }, { headers: getAuthHeaders() });
+      navigate(`/room/${roomId}`);
+    } catch {
+      alert("Erreur lors de la connexion à la room");
+    } finally {
+      setJoining(null);
+    }
+  };
+
   return (
     <div className="glass-card card-glow overflow-hidden animate-fade-up delay-700" data-testid="rooms-card">
       <div className="relative h-32 overflow-hidden">
-        <img
-          src={HEADPHONES_IMG}
-          alt=""
-          className="w-full h-full object-cover opacity-20"
-        />
+        <img src={HEADPHONES_IMG} alt="" className="w-full h-full object-cover opacity-20" />
         <div className="absolute inset-0 bg-gradient-to-t from-[#09090b] to-transparent" />
-        <div className="absolute bottom-4 left-6">
+        <div className="absolute bottom-4 left-6 right-6 flex items-end justify-between">
           <h3 className="font-heading text-lg font-semibold text-white flex items-center gap-2">
             <Headphones className="w-5 h-5 text-notify-blue" />
             Listening Rooms
           </h3>
+          <button
+            data-testid="create-room-btn"
+            onClick={() => setShowCreate(!showCreate)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-notify-blue/90 hover:bg-notify-blue text-white text-xs font-medium transition-colors"
+          >
+            <Plus className="w-3 h-3" />
+            Créer
+          </button>
         </div>
       </div>
-      <div className="p-6">
-        <div className="flex flex-col items-center py-4 text-center">
-          <div className="w-14 h-14 rounded-full bg-white/[0.03] border border-white/5 flex items-center justify-center mb-3">
-            <Radio className="w-6 h-6 text-zinc-700" />
+
+      {/* Create Room Form */}
+      {showCreate && (
+        <div className="p-4 border-b border-white/5" data-testid="create-room-form">
+          <div className="flex items-center gap-2">
+            <input
+              data-testid="room-name-input"
+              type="text"
+              value={roomName}
+              onChange={(e) => setRoomName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+              placeholder="Nom de la room..."
+              className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder:text-zinc-500 outline-none focus:border-notify-blue/50"
+            />
+            <button
+              data-testid="confirm-create-room-btn"
+              onClick={handleCreate}
+              disabled={creating || !roomName.trim()}
+              className="px-4 py-2 rounded-xl bg-notify-blue hover:bg-blue-600 text-white text-sm font-medium transition-colors disabled:opacity-50"
+            >
+              {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : "Créer"}
+            </button>
           </div>
-          <p className="text-sm text-zinc-400">No active rooms.</p>
-          <p className="text-xs text-zinc-600 mt-2">Create a room and listen together</p>
         </div>
+      )}
+
+      <div className="p-4">
+        {loading ? (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="w-5 h-5 text-zinc-500 animate-spin" />
+          </div>
+        ) : rooms.length === 0 ? (
+          <div className="flex flex-col items-center py-6 text-center">
+            <div className="w-14 h-14 rounded-full bg-white/[0.03] border border-white/5 flex items-center justify-center mb-3">
+              <Radio className="w-6 h-6 text-zinc-700" />
+            </div>
+            <p className="text-sm text-zinc-400">Aucune room active.</p>
+            <p className="text-xs text-zinc-600 mt-2">Créez une room et écoutez ensemble</p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {rooms.map((room) => (
+              <div
+                key={room.id}
+                className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.02] border border-white/[0.04] hover:border-white/10 transition-all group cursor-pointer"
+                data-testid={`room-${room.id}`}
+                onClick={() => handleJoin(room.id)}
+              >
+                <div className="w-10 h-10 rounded-xl bg-notify-blue/10 flex items-center justify-center flex-shrink-0">
+                  <Radio className="w-5 h-5 text-notify-blue" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-white truncate">{room.name}</p>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <Crown className="w-3 h-3 text-amber-400" />
+                    <span className="text-xs text-zinc-500">{room.host_name}</span>
+                    <span className="text-xs text-zinc-600">·</span>
+                    <Users className="w-3 h-3 text-zinc-500" />
+                    <span className="text-xs text-zinc-500">{room.participant_count || 0}</span>
+                  </div>
+                </div>
+                <div className="flex-shrink-0">
+                  {joining === room.id ? (
+                    <Loader2 className="w-4 h-4 text-notify-blue animate-spin" />
+                  ) : (
+                    <ArrowRight className="w-4 h-4 text-zinc-600 group-hover:text-notify-blue transition-colors" />
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -538,6 +658,7 @@ function ActivityFeedCard() {
 
 // ─── Main Dashboard ───
 export default function Dashboard({ user, onLogout }) {
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState("dashboard");
   const [topArtists, setTopArtists] = useState([]);
   const [topTracks, setTopTracks] = useState([]);
@@ -663,9 +784,9 @@ export default function Dashboard({ user, onLogout }) {
             <FriendsCard />
           </div>
 
-          {/* Rooms (placeholder) */}
+          {/* Rooms (functional) */}
           <div className="md:col-span-7 lg:col-span-8">
-            <RoomsCard />
+            <RoomsCard navigate={navigate} />
           </div>
 
           {/* Activity Feed (placeholder) */}

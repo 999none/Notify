@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route, Navigate, useNavigate, useSearchParams } 
 import axios from "axios";
 import LandingPage from "@/pages/LandingPage";
 import Dashboard from "@/pages/Dashboard";
+import RoomPage from "@/pages/RoomPage";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -107,6 +108,14 @@ function App() {
           element={
             <ProtectedRoute user={user} loading={loading}>
               <Dashboard user={user} onLogout={handleLogout} />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/room/:roomId"
+          element={
+            <ProtectedRoute user={user} loading={loading}>
+              <RoomPage user={user} />
             </ProtectedRoute>
           }
         />
