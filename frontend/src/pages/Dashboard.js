@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   LayoutDashboard,
   Users,
@@ -11,9 +11,20 @@ import {
   Headphones,
   UserPlus,
   Waves,
+  Clock,
+  ListMusic,
+  Star,
+  ExternalLink,
+  Download,
+  Play,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
+import axios from "axios";
+import MusicPlayer, { PlayButton } from "@/components/MusicPlayer";
+
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const API = `${BACKEND_URL}/api`;
 
 const VINYL_IMG = "https://images.unsplash.com/photo-1621940760699-8fe82b462dfa?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODF8MHwxfHNlYXJjaHwzfHx2aW55bCUyMHJlY29yZCUyMGFic3RyYWN0JTIwY3Jvd2QlMjBhZXN0aGV0aWMlMjBkYXJrJTIwYmx1ZXxlbnwwfHx8fDE3NzMxNzI4MzR8MA&ixlib=rb-4.1.0&q=85";
 const HEADPHONES_IMG = "https://images.unsplash.com/photo-1697040975575-0baa5b9c7803?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1NzZ8MHwxfHNlYXJjaHwyfHxwZXJzb24lMjBsaXN0ZW5pbmclMjB0byUyMG11c2ljJTIwaGVhZHBob25lcyUyMGRhcmslMjBhZXN0aGV0aWN8ZW58MHx8fHwxNzczMTcyODM1fDA&ixlib=rb-4.1.0&q=85";
@@ -26,10 +37,36 @@ const NAV_ITEMS = [
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
+function getAuthHeaders() {
+  const token = localStorage.getItem("notify_token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function formatDuration(ms) {
+  const minutes = Math.floor(ms / 60000);
+  const seconds = Math.floor((ms % 60000) / 1000);
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+function formatPlayedAt(dateStr) {
+  if (!dateStr) return "";
+  const date = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now - date;
+  const diffMins = Math.floor(diffMs / 60000);
+  if (diffMins < 1) return "Just now";
+  if (diffMins < 60) return `${diffMins}m ago`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString();
+}
+
+// ─── Sidebar ───
 function Sidebar({ activeTab, setActiveTab, user, onLogout }) {
   return (
     <aside className="sidebar-desktop glass-sidebar fixed left-0 top-0 bottom-0 w-[260px] flex flex-col z-50" data-testid="sidebar">
-      {/* Logo */}
       <div className="flex items-center gap-2.5 px-6 py-7">
         <div className="w-9 h-9 rounded-xl bg-notify-blue flex items-center justify-center">
           <Music className="w-5 h-5 text-white" />
@@ -38,10 +75,7 @@ function Sidebar({ activeTab, setActiveTab, user, onLogout }) {
           Notify
         </span>
       </div>
-
       <Separator className="bg-white/5 mx-4" />
-
-      {/* Nav */}
       <nav className="flex-1 px-4 py-6 space-y-1">
         {NAV_ITEMS.map((item) => (
           <button
@@ -55,8 +89,6 @@ function Sidebar({ activeTab, setActiveTab, user, onLogout }) {
           </button>
         ))}
       </nav>
-
-      {/* User + Logout */}
       <div className="px-4 pb-6">
         <Separator className="bg-white/5 mb-4" />
         <div className="flex items-center gap-3 px-2 mb-3">
@@ -84,6 +116,7 @@ function Sidebar({ activeTab, setActiveTab, user, onLogout }) {
   );
 }
 
+// ─── Mobile Nav ───
 function MobileNav({ activeTab, setActiveTab }) {
   return (
     <div className="mobile-nav fixed bottom-0 left-0 right-0 z-50 glass-sidebar border-t border-white/5 px-2 py-2" data-testid="mobile-nav">
@@ -106,6 +139,7 @@ function MobileNav({ activeTab, setActiveTab }) {
   );
 }
 
+// ─── Profile Card (existing) ───
 function ProfileCard({ user }) {
   return (
     <div className="glass-card card-glow p-6 animate-fade-up delay-100" data-testid="profile-card">
@@ -154,41 +188,272 @@ function ProfileCard({ user }) {
   );
 }
 
-function ListeningActivityCard() {
+// ─── Skeleton Card ───
+function SkeletonCard({ rows = 3 }) {
   return (
-    <div className="glass-card card-glow overflow-hidden animate-fade-up delay-200" data-testid="listening-activity-card">
-      <div className="relative h-40 overflow-hidden">
-        <img
-          src={VINYL_IMG}
-          alt=""
-          className="w-full h-full object-cover opacity-30"
-        />
-        <div className="absolute inset-0 bg-gradient-to-t from-[#09090b] to-transparent" />
-        <div className="absolute bottom-4 left-6 right-6">
-          <div className="flex items-center gap-2 mb-1">
-            <Disc3 className="w-5 h-5 text-notify-blue animate-spin" style={{ animationDuration: '3s' }} />
-            <h3 className="font-heading text-lg font-semibold text-white">Listening Activity</h3>
+    <div className="glass-card p-6 space-y-4">
+      {Array.from({ length: rows }).map((_, i) => (
+        <div key={i} className="flex items-center gap-3">
+          <div className="w-12 h-12 rounded-xl skeleton-shimmer flex-shrink-0" />
+          <div className="flex-1 space-y-2">
+            <div className="h-3 w-32 rounded skeleton-shimmer" />
+            <div className="h-2 w-20 rounded skeleton-shimmer" />
           </div>
         </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Top Artists Section ───
+function TopArtistsCard({ artists, loading }) {
+  if (loading) return <SkeletonCard rows={5} />;
+
+  return (
+    <div className="glass-card card-glow overflow-hidden animate-fade-up delay-200" data-testid="top-artists-card">
+      <div className="p-6 pb-4">
+        <h3 className="font-heading text-lg font-semibold text-white flex items-center gap-2">
+          <Star className="w-5 h-5 text-notify-blue" />
+          Top Artists
+        </h3>
+        <p className="text-xs text-zinc-500 mt-1">Your most listened artists</p>
       </div>
-      <div className="p-6">
-        <div className="flex items-center gap-4 p-4 rounded-2xl bg-white/[0.03] border border-white/5">
-          <div className="w-12 h-12 rounded-xl bg-zinc-800 flex items-center justify-center">
-            <Waves className="w-6 h-6 text-zinc-600" />
+      <div className="px-4 pb-4 space-y-1">
+        {artists.length === 0 ? (
+          <div className="flex flex-col items-center py-8 text-center">
+            <div className="w-14 h-14 rounded-full bg-white/[0.03] border border-white/5 flex items-center justify-center mb-3">
+              <Star className="w-6 h-6 text-zinc-700" />
+            </div>
+            <p className="text-sm text-zinc-400">No top artists yet.</p>
+            <p className="text-xs text-zinc-600 mt-1">Listen to more music on Spotify</p>
           </div>
-          <div>
-            <p className="text-sm text-zinc-300">Your listening activity will appear here.</p>
-            <p className="text-xs text-zinc-600 mt-1">Connect to see what you're playing</p>
-          </div>
-        </div>
+        ) : (
+          artists.map((artist, index) => (
+            <a
+              key={artist.id}
+              href={artist.external_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-3 p-3 rounded-xl hover:bg-white/[0.04] transition-colors group"
+              data-testid={`top-artist-${index}`}
+            >
+              <span className="text-xs font-bold text-zinc-600 w-5 text-right">{index + 1}</span>
+              <div className="w-11 h-11 rounded-xl overflow-hidden flex-shrink-0 bg-zinc-800">
+                {artist.image ? (
+                  <img src={artist.image} alt={artist.name} className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center">
+                    <Music className="w-5 h-5 text-zinc-600" />
+                  </div>
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-white truncate">{artist.name}</p>
+                <p className="text-xs text-zinc-500 truncate">
+                  {artist.genres.length > 0 ? artist.genres.join(", ") : "No genres"}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="h-1.5 w-16 rounded-full bg-zinc-800 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-blue-500 to-blue-400"
+                    style={{ width: `${artist.popularity}%` }}
+                  />
+                </div>
+                <ExternalLink className="w-3.5 h-3.5 text-zinc-600 opacity-0 group-hover:opacity-100 transition-opacity" />
+              </div>
+            </a>
+          ))
+        )}
       </div>
     </div>
   );
 }
 
+// ─── Top Tracks Section ───
+function TopTracksCard({ tracks, loading, subscription, onPlayTrack }) {
+  if (loading) return <SkeletonCard rows={5} />;
+
+  return (
+    <div className="glass-card card-glow overflow-hidden animate-fade-up delay-300" data-testid="top-tracks-card">
+      <div className="p-6 pb-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="font-heading text-lg font-semibold text-white flex items-center gap-2">
+              <Disc3 className="w-5 h-5 text-notify-blue" />
+              Top Tracks
+            </h3>
+            <p className="text-xs text-zinc-500 mt-1">Your most played songs</p>
+          </div>
+          {subscription !== "premium" && tracks.length > 0 && (
+            <span className="text-[10px] px-2 py-1 rounded-full bg-red-500/10 text-red-400 border border-red-500/20">
+              YouTube Alt.
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="px-4 pb-4 space-y-1">
+        {tracks.length === 0 ? (
+          <div className="flex flex-col items-center py-8 text-center">
+            <div className="w-14 h-14 rounded-full bg-white/[0.03] border border-white/5 flex items-center justify-center mb-3">
+              <Disc3 className="w-6 h-6 text-zinc-700" />
+            </div>
+            <p className="text-sm text-zinc-400">No top tracks yet.</p>
+            <p className="text-xs text-zinc-600 mt-1">Listen to more music on Spotify</p>
+          </div>
+        ) : (
+          tracks.map((track, index) => (
+            <div
+              key={track.id}
+              className="flex items-center gap-3 p-3 rounded-xl hover:bg-white/[0.04] transition-colors group"
+              data-testid={`top-track-${index}`}
+            >
+              <span className="text-xs font-bold text-zinc-600 w-5 text-right">{index + 1}</span>
+              <div className="w-11 h-11 rounded-lg overflow-hidden flex-shrink-0 bg-zinc-800">
+                {track.image ? (
+                  <img src={track.image} alt={track.name} className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center">
+                    <Music className="w-5 h-5 text-zinc-600" />
+                  </div>
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-white truncate">{track.name}</p>
+                <p className="text-xs text-zinc-500 truncate">{track.artist}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-zinc-600 tabular-nums">{formatDuration(track.duration_ms)}</span>
+                <PlayButton track={track} subscription={subscription} onPlay={onPlayTrack} />
+                <a href={track.external_url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>
+                  <ExternalLink className="w-3.5 h-3.5 text-zinc-600 opacity-0 group-hover:opacity-100 transition-opacity" />
+                </a>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Recently Played Section ───
+function RecentlyPlayedCard({ tracks, loading, subscription, onPlayTrack }) {
+  if (loading) return <SkeletonCard rows={5} />;
+
+  return (
+    <div className="glass-card card-glow overflow-hidden animate-fade-up delay-400" data-testid="recently-played-card">
+      <div className="p-6 pb-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="font-heading text-lg font-semibold text-white flex items-center gap-2">
+              <Clock className="w-5 h-5 text-notify-blue" />
+              Recently Played
+            </h3>
+            <p className="text-xs text-zinc-500 mt-1">Your listening history</p>
+          </div>
+        </div>
+      </div>
+      <div className="px-4 pb-4 space-y-1 max-h-[500px] overflow-y-auto">
+        {tracks.length === 0 ? (
+          <div className="flex flex-col items-center py-8 text-center">
+            <div className="w-14 h-14 rounded-full bg-white/[0.03] border border-white/5 flex items-center justify-center mb-3">
+              <Clock className="w-6 h-6 text-zinc-700" />
+            </div>
+            <p className="text-sm text-zinc-400">No recent plays.</p>
+            <p className="text-xs text-zinc-600 mt-1">Start listening on Spotify</p>
+          </div>
+        ) : (
+          tracks.map((track, index) => (
+            <div
+              key={`${track.id}-${index}`}
+              className="flex items-center gap-3 p-3 rounded-xl hover:bg-white/[0.04] transition-colors group"
+              data-testid={`recently-played-${index}`}
+            >
+              <div className="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 bg-zinc-800">
+                {track.image ? (
+                  <img src={track.image} alt={track.name} className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center">
+                    <Music className="w-4 h-4 text-zinc-600" />
+                  </div>
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-white truncate">{track.name}</p>
+                <p className="text-xs text-zinc-500 truncate">{track.artist}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-zinc-600 flex-shrink-0">{formatPlayedAt(track.played_at)}</span>
+                <PlayButton track={track} subscription={subscription} onPlay={onPlayTrack} />
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Playlists Section ───
+function PlaylistsCard({ playlists, loading }) {
+  if (loading) return <SkeletonCard rows={4} />;
+
+  return (
+    <div className="glass-card card-glow overflow-hidden animate-fade-up delay-500" data-testid="playlists-card">
+      <div className="p-6 pb-4">
+        <h3 className="font-heading text-lg font-semibold text-white flex items-center gap-2">
+          <ListMusic className="w-5 h-5 text-notify-blue" />
+          Your Playlists
+        </h3>
+        <p className="text-xs text-zinc-500 mt-1">Your Spotify playlists</p>
+      </div>
+      <div className="px-4 pb-4">
+        {playlists.length === 0 ? (
+          <div className="flex flex-col items-center py-8 text-center">
+            <div className="w-14 h-14 rounded-full bg-white/[0.03] border border-white/5 flex items-center justify-center mb-3">
+              <ListMusic className="w-6 h-6 text-zinc-700" />
+            </div>
+            <p className="text-sm text-zinc-400">No playlists found.</p>
+            <p className="text-xs text-zinc-600 mt-1">Create playlists on Spotify</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {playlists.map((playlist, index) => (
+              <a
+                key={playlist.id}
+                href={playlist.external_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="group flex flex-col rounded-xl overflow-hidden bg-white/[0.02] border border-white/[0.04] hover:border-white/10 transition-all"
+                data-testid={`playlist-${index}`}
+              >
+                <div className="aspect-square w-full overflow-hidden bg-zinc-800">
+                  {playlist.image ? (
+                    <img src={playlist.image} alt={playlist.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center">
+                      <ListMusic className="w-8 h-8 text-zinc-700" />
+                    </div>
+                  )}
+                </div>
+                <div className="p-3">
+                  <p className="text-sm font-medium text-white truncate">{playlist.name}</p>
+                  <p className="text-xs text-zinc-500 mt-0.5">{playlist.tracks_total} tracks</p>
+                </div>
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Friends Card (placeholder) ───
 function FriendsCard() {
   return (
-    <div className="glass-card card-glow p-6 animate-fade-up delay-300" data-testid="friends-card">
+    <div className="glass-card card-glow p-6 animate-fade-up delay-600" data-testid="friends-card">
       <div className="flex items-center justify-between mb-5">
         <h3 className="font-heading text-lg font-semibold text-white flex items-center gap-2">
           <Users className="w-5 h-5 text-notify-blue" />
@@ -210,9 +475,10 @@ function FriendsCard() {
   );
 }
 
+// ─── Rooms Card (placeholder) ───
 function RoomsCard() {
   return (
-    <div className="glass-card card-glow overflow-hidden animate-fade-up delay-400" data-testid="rooms-card">
+    <div className="glass-card card-glow overflow-hidden animate-fade-up delay-700" data-testid="rooms-card">
       <div className="relative h-32 overflow-hidden">
         <img
           src={HEADPHONES_IMG}
@@ -240,9 +506,10 @@ function RoomsCard() {
   );
 }
 
+// ─── Activity Feed Card (placeholder) ───
 function ActivityFeedCard() {
   return (
-    <div className="glass-card card-glow p-6 animate-fade-up delay-500" data-testid="activity-feed-card">
+    <div className="glass-card card-glow p-6 animate-fade-up delay-800" data-testid="activity-feed-card">
       <h3 className="font-heading text-lg font-semibold text-white flex items-center gap-2 mb-5">
         <Activity className="w-5 h-5 text-notify-blue" />
         Activity Feed
@@ -269,32 +536,99 @@ function ActivityFeedCard() {
   );
 }
 
+// ─── Main Dashboard ───
 export default function Dashboard({ user, onLogout }) {
   const [activeTab, setActiveTab] = useState("dashboard");
+  const [topArtists, setTopArtists] = useState([]);
+  const [topTracks, setTopTracks] = useState([]);
+  const [recentlyPlayed, setRecentlyPlayed] = useState([]);
+  const [playlists, setPlaylists] = useState([]);
+  const [loadingArtists, setLoadingArtists] = useState(true);
+  const [loadingTracks, setLoadingTracks] = useState(true);
+  const [loadingRecent, setLoadingRecent] = useState(true);
+  const [loadingPlaylists, setLoadingPlaylists] = useState(true);
+
+  // Player state
+  const [currentTrack, setCurrentTrack] = useState(null);
+  const [spotifyToken, setSpotifyToken] = useState(null);
+
+  const subscription = user?.subscription || "free";
+
+  const fetchSpotifyData = useCallback(async () => {
+    const headers = getAuthHeaders();
+
+    // Fetch all data in parallel
+    const fetchArtists = axios.get(`${API}/spotify/top-artists`, { headers })
+      .then(res => { setTopArtists(res.data.artists || []); })
+      .catch(() => { setTopArtists([]); })
+      .finally(() => setLoadingArtists(false));
+
+    const fetchTracks = axios.get(`${API}/spotify/top-tracks`, { headers })
+      .then(res => { setTopTracks(res.data.tracks || []); })
+      .catch(() => { setTopTracks([]); })
+      .finally(() => setLoadingTracks(false));
+
+    const fetchRecent = axios.get(`${API}/spotify/recently-played`, { headers })
+      .then(res => { setRecentlyPlayed(res.data.tracks || []); })
+      .catch(() => { setRecentlyPlayed([]); })
+      .finally(() => setLoadingRecent(false));
+
+    const fetchPlaylists = axios.get(`${API}/spotify/playlists`, { headers })
+      .then(res => { setPlaylists(res.data.playlists || []); })
+      .catch(() => { setPlaylists([]); })
+      .finally(() => setLoadingPlaylists(false));
+
+    // Also fetch Spotify access token for Premium playback
+    if (subscription === "premium") {
+      axios.get(`${API}/player/spotify-token`, { headers })
+        .then(res => { setSpotifyToken(res.data.access_token); })
+        .catch(() => {});
+    }
+
+    await Promise.allSettled([fetchArtists, fetchTracks, fetchRecent, fetchPlaylists]);
+  }, [subscription]);
+
+  useEffect(() => {
+    fetchSpotifyData();
+  }, [fetchSpotifyData]);
+
+  const handlePlayTrack = (track) => {
+    setCurrentTrack(track);
+  };
+
+  const handleClosePlayer = () => {
+    setCurrentTrack(null);
+  };
 
   return (
     <div className="min-h-screen bg-black" data-testid="dashboard-page">
-      {/* Sidebar - Desktop */}
       <Sidebar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         user={user}
         onLogout={onLogout}
       />
-
-      {/* Mobile Nav */}
       <MobileNav activeTab={activeTab} setActiveTab={setActiveTab} />
 
-      {/* Main Content */}
       <main className="md:ml-[260px] min-h-screen p-6 md:p-8 lg:p-10 pb-24 md:pb-10">
         {/* Header */}
-        <div className="mb-10 animate-fade-up">
-          <h1 className="font-heading text-3xl md:text-4xl font-bold text-white tracking-tight">
-            Welcome back{user?.username ? `, ${user.username}` : ""}
-          </h1>
-          <p className="text-zinc-500 mt-2 text-base">
-            Here's what's happening in your music world
-          </p>
+        <div className="mb-10 animate-fade-up flex items-center justify-between">
+          <div>
+            <h1 className="font-heading text-3xl md:text-4xl font-bold text-white tracking-tight">
+              Welcome back{user?.username ? `, ${user.username}` : ""}
+            </h1>
+            <p className="text-zinc-500 mt-2 text-base">
+              Here's what's happening in your music world
+            </p>
+          </div>
+          <a
+            href={`${API}/download/project-zip`}
+            className="hidden md:flex items-center gap-2 text-sm text-zinc-400 hover:text-white transition-colors px-4 py-2 rounded-full bg-white/5 hover:bg-white/10 border border-white/10"
+            data-testid="download-zip-button"
+          >
+            <Download className="w-4 h-4" />
+            Download ZIP
+          </a>
         </div>
 
         {/* Bento Grid */}
@@ -304,27 +638,52 @@ export default function Dashboard({ user, onLogout }) {
             <ProfileCard user={user} />
           </div>
 
-          {/* Listening Activity */}
+          {/* Top Artists */}
           <div className="md:col-span-7 lg:col-span-8">
-            <ListeningActivityCard />
+            <TopArtistsCard artists={topArtists} loading={loadingArtists} />
           </div>
 
-          {/* Friends */}
+          {/* Top Tracks */}
+          <div className="md:col-span-7 lg:col-span-8">
+            <TopTracksCard tracks={topTracks} loading={loadingTracks} subscription={subscription} onPlayTrack={handlePlayTrack} />
+          </div>
+
+          {/* Recently Played */}
+          <div className="md:col-span-5 lg:col-span-4">
+            <RecentlyPlayedCard tracks={recentlyPlayed} loading={loadingRecent} subscription={subscription} onPlayTrack={handlePlayTrack} />
+          </div>
+
+          {/* Playlists */}
+          <div className="col-span-full">
+            <PlaylistsCard playlists={playlists} loading={loadingPlaylists} />
+          </div>
+
+          {/* Friends (placeholder) */}
           <div className="md:col-span-5 lg:col-span-4">
             <FriendsCard />
           </div>
 
-          {/* Rooms */}
+          {/* Rooms (placeholder) */}
           <div className="md:col-span-7 lg:col-span-8">
             <RoomsCard />
           </div>
 
-          {/* Activity Feed */}
+          {/* Activity Feed (placeholder) */}
           <div className="col-span-full">
             <ActivityFeedCard />
           </div>
         </div>
       </main>
+
+      {/* Music Player Modal */}
+      {currentTrack && (
+        <MusicPlayer
+          track={currentTrack}
+          subscription={subscription}
+          spotifyToken={spotifyToken}
+          onClose={handleClosePlayer}
+        />
+      )}
     </div>
   );
 }
