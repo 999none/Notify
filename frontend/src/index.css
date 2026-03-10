@@ -1,0 +1,98 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,100..1000&family=Outfit:wght@100..900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 0%;
+    --foreground: 0 0% 98%;
+    --card: 0 0% 3.5%;
+    --card-foreground: 0 0% 98%;
+    --popover: 0 0% 3.5%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 8%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 0 0% 8%;
+    --muted-foreground: 240 5% 65%;
+    --accent: 0 0% 8%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 12%;
+    --input: 0 0% 12%;
+    --ring: 217 91% 60%;
+    --chart-1: 220 70% 50%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
+    --radius: 0.75rem;
+  }
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background-color: #000000;
+  color: #fafafa;
+  font-family: "DM Sans", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: "Outfit", sans-serif;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+}
+
+@layer base {
+  [data-debug-wrapper="true"] {
+    display: contents !important;
+  }
+  [data-debug-wrapper="true"] > * {
+    margin-left: inherit;
+    margin-right: inherit;
+    margin-top: inherit;
+    margin-bottom: inherit;
+    padding-left: inherit;
+    padding-right: inherit;
+    padding-top: inherit;
+    padding-bottom: inherit;
+    column-gap: inherit;
+    row-gap: inherit;
+    gap: inherit;
+    border-left-width: inherit;
+    border-right-width: inherit;
+    border-top-width: inherit;
+    border-bottom-width: inherit;
+  }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
