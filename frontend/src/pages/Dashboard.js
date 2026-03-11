@@ -4,20 +4,18 @@ import {
   LayoutDashboard,
   Users,
   Radio,
-  Activity,
+  Bell,
   Settings,
   LogOut,
   Music,
   Disc3,
   Headphones,
   UserPlus,
-  Waves,
   Clock,
   ListMusic,
   Star,
   ExternalLink,
   Download,
-  Play,
   Plus,
   Loader2,
   Crown,
@@ -27,6 +25,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
 import axios from "axios";
 import MusicPlayer, { PlayButton } from "@/components/MusicPlayer";
+import NotificationFeed, { NotificationBadge, useNotificationSocket } from "@/components/NotificationFeed";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -38,7 +37,7 @@ const NAV_ITEMS = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "friends", label: "Friends", icon: Users },
   { id: "rooms", label: "Listening Rooms", icon: Radio },
-  { id: "activity", label: "Activity", icon: Activity },
+  { id: "notifications", label: "Notifications", icon: Bell },
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
@@ -69,7 +68,7 @@ function formatPlayedAt(dateStr) {
 }
 
 // ─── Sidebar ───
-function Sidebar({ activeTab, setActiveTab, user, onLogout }) {
+function Sidebar({ activeTab, setActiveTab, user, onLogout, unreadCount }) {
   return (
     <aside className="sidebar-desktop glass-sidebar fixed left-0 top-0 bottom-0 w-[260px] flex flex-col z-50" data-testid="sidebar">
       <div className="flex items-center gap-2.5 px-6 py-7">
@@ -87,9 +86,12 @@ function Sidebar({ activeTab, setActiveTab, user, onLogout }) {
             key={item.id}
             data-testid={`nav-${item.id}`}
             onClick={() => setActiveTab(item.id)}
-            className={`nav-item w-full ${activeTab === item.id ? "active" : ""}`}
+            className={`nav-item w-full relative ${activeTab === item.id ? "active" : ""}`}
           >
-            <item.icon className="w-5 h-5" />
+            <div className="relative">
+              <item.icon className="w-5 h-5" />
+              {item.id === "notifications" && <NotificationBadge count={unreadCount} />}
+            </div>
             {item.label}
           </button>
         ))}
@@ -122,7 +124,7 @@ function Sidebar({ activeTab, setActiveTab, user, onLogout }) {
 }
 
 // ─── Mobile Nav ───
-function MobileNav({ activeTab, setActiveTab }) {
+function MobileNav({ activeTab, setActiveTab, unreadCount }) {
   return (
     <div className="mobile-nav fixed bottom-0 left-0 right-0 z-50 glass-sidebar border-t border-white/5 px-2 py-2" data-testid="mobile-nav">
       <div className="flex items-center justify-around">
@@ -131,11 +133,14 @@ function MobileNav({ activeTab, setActiveTab }) {
             key={item.id}
             data-testid={`mobile-nav-${item.id}`}
             onClick={() => setActiveTab(item.id)}
-            className={`flex flex-col items-center gap-1 px-3 py-2 rounded-xl transition-colors ${
+            className={`flex flex-col items-center gap-1 px-3 py-2 rounded-xl transition-colors relative ${
               activeTab === item.id ? "text-blue-400" : "text-zinc-500"
             }`}
           >
-            <item.icon className="w-5 h-5" />
+            <div className="relative">
+              <item.icon className="w-5 h-5" />
+              {item.id === "notifications" && <NotificationBadge count={unreadCount} />}
+            </div>
             <span className="text-[10px] font-medium">{item.label}</span>
           </button>
         ))}
@@ -626,36 +631,6 @@ function RoomsCard({ navigate }) {
   );
 }
 
-// ─── Activity Feed Card (placeholder) ───
-function ActivityFeedCard() {
-  return (
-    <div className="glass-card card-glow p-6 animate-fade-up delay-800" data-testid="activity-feed-card">
-      <h3 className="font-heading text-lg font-semibold text-white flex items-center gap-2 mb-5">
-        <Activity className="w-5 h-5 text-notify-blue" />
-        Activity Feed
-      </h3>
-      <div className="space-y-3">
-        {[1, 2, 3].map((i) => (
-          <div
-            key={i}
-            className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.02] border border-white/[0.03]"
-          >
-            <div className="w-10 h-10 rounded-full bg-zinc-800/80" />
-            <div className="flex-1">
-              <div className="h-3 w-32 rounded bg-zinc-800/60" />
-              <div className="h-2 w-20 rounded bg-zinc-800/40 mt-2" />
-            </div>
-            <div className="h-8 w-8 rounded-lg bg-zinc-800/40" />
-          </div>
-        ))}
-      </div>
-      <p className="text-center text-sm text-zinc-500 mt-4">
-        Your friends' activity will appear here.
-      </p>
-    </div>
-  );
-}
-
 // ─── Main Dashboard ───
 export default function Dashboard({ user, onLogout }) {
   const navigate = useNavigate();
@@ -673,7 +648,29 @@ export default function Dashboard({ user, onLogout }) {
   const [currentTrack, setCurrentTrack] = useState(null);
   const [spotifyToken, setSpotifyToken] = useState(null);
 
+  // Notification socket
+  const { unreadCount, newNotification, decrementCount, resetCount } = useNotificationSocket(user?.id);
+
   const subscription = user?.subscription || "free";
+
+  // Dispatch new_notification event for NotificationFeed component
+  useEffect(() => {
+    if (newNotification) {
+      window.dispatchEvent(new CustomEvent("new_notification", { detail: newNotification }));
+    }
+  }, [newNotification]);
+
+  // Listen for read events
+  useEffect(() => {
+    const handleRead = () => decrementCount();
+    const handleAllRead = () => resetCount();
+    window.addEventListener("notification_read", handleRead);
+    window.addEventListener("notification_all_read", handleAllRead);
+    return () => {
+      window.removeEventListener("notification_read", handleRead);
+      window.removeEventListener("notification_all_read", handleAllRead);
+    };
+  }, [decrementCount, resetCount]);
 
   const fetchSpotifyData = useCallback(async () => {
     const headers = getAuthHeaders();
@@ -728,8 +725,9 @@ export default function Dashboard({ user, onLogout }) {
         setActiveTab={setActiveTab}
         user={user}
         onLogout={onLogout}
+        unreadCount={unreadCount}
       />
-      <MobileNav activeTab={activeTab} setActiveTab={setActiveTab} />
+      <MobileNav activeTab={activeTab} setActiveTab={setActiveTab} unreadCount={unreadCount} />
 
       <main className="md:ml-[260px] min-h-screen p-6 md:p-8 lg:p-10 pb-24 md:pb-10">
         {/* Header */}
@@ -752,48 +750,55 @@ export default function Dashboard({ user, onLogout }) {
           </a>
         </div>
 
-        {/* Bento Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
-          {/* Profile Card */}
-          <div className="md:col-span-5 lg:col-span-4">
-            <ProfileCard user={user} />
+        {/* Show notification feed when notifications tab is active */}
+        {activeTab === "notifications" ? (
+          <div className="max-w-3xl">
+            <NotificationFeed userId={user?.id} />
           </div>
+        ) : (
+          /* Bento Grid */
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
+            {/* Profile Card */}
+            <div className="md:col-span-5 lg:col-span-4">
+              <ProfileCard user={user} />
+            </div>
 
-          {/* Top Artists */}
-          <div className="md:col-span-7 lg:col-span-8">
-            <TopArtistsCard artists={topArtists} loading={loadingArtists} />
-          </div>
+            {/* Top Artists */}
+            <div className="md:col-span-7 lg:col-span-8">
+              <TopArtistsCard artists={topArtists} loading={loadingArtists} />
+            </div>
 
-          {/* Top Tracks */}
-          <div className="md:col-span-7 lg:col-span-8">
-            <TopTracksCard tracks={topTracks} loading={loadingTracks} subscription={subscription} onPlayTrack={handlePlayTrack} />
-          </div>
+            {/* Top Tracks */}
+            <div className="md:col-span-7 lg:col-span-8">
+              <TopTracksCard tracks={topTracks} loading={loadingTracks} subscription={subscription} onPlayTrack={handlePlayTrack} />
+            </div>
 
-          {/* Recently Played */}
-          <div className="md:col-span-5 lg:col-span-4">
-            <RecentlyPlayedCard tracks={recentlyPlayed} loading={loadingRecent} subscription={subscription} onPlayTrack={handlePlayTrack} />
-          </div>
+            {/* Recently Played */}
+            <div className="md:col-span-5 lg:col-span-4">
+              <RecentlyPlayedCard tracks={recentlyPlayed} loading={loadingRecent} subscription={subscription} onPlayTrack={handlePlayTrack} />
+            </div>
 
-          {/* Playlists */}
-          <div className="col-span-full">
-            <PlaylistsCard playlists={playlists} loading={loadingPlaylists} />
-          </div>
+            {/* Playlists */}
+            <div className="col-span-full">
+              <PlaylistsCard playlists={playlists} loading={loadingPlaylists} />
+            </div>
 
-          {/* Friends (placeholder) */}
-          <div className="md:col-span-5 lg:col-span-4">
-            <FriendsCard />
-          </div>
+            {/* Friends (placeholder) */}
+            <div className="md:col-span-5 lg:col-span-4">
+              <FriendsCard />
+            </div>
 
-          {/* Rooms (functional) */}
-          <div className="md:col-span-7 lg:col-span-8">
-            <RoomsCard navigate={navigate} />
-          </div>
+            {/* Rooms (functional) */}
+            <div className="md:col-span-7 lg:col-span-8">
+              <RoomsCard navigate={navigate} />
+            </div>
 
-          {/* Activity Feed (placeholder) */}
-          <div className="col-span-full">
-            <ActivityFeedCard />
+            {/* Activity Feed - Notification Feed inline */}
+            <div className="col-span-full">
+              <NotificationFeed userId={user?.id} />
+            </div>
           </div>
-        </div>
+        )}
       </main>
 
       {/* Music Player Modal */}

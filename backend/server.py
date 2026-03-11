@@ -93,6 +93,32 @@ class SearchTrackRequest(BaseModel):
     query: str
 
 
+# ─── Notification Helper ───
+async def create_notification(user_id: str, notif_type: str, source_user_id: str, content: str, room_id: str = None, track_id: str = None, track_image: str = None):
+    """Create a notification and push via Socket.IO"""
+    notif_id = str(uuid.uuid4())
+    source_user = await db.users.find_one({"id": source_user_id}, {"_id": 0})
+    notif = {
+        "id": notif_id,
+        "user_id": user_id,
+        "type": notif_type,
+        "source_user_id": source_user_id,
+        "source_username": source_user.get("username", "Unknown") if source_user else "Unknown",
+        "source_avatar": source_user.get("avatar") if source_user else None,
+        "room_id": room_id,
+        "track_id": track_id,
+        "track_image": track_image,
+        "content": content,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "read": False,
+    }
+    await db.notifications.insert_one(notif)
+    notif.pop("_id", None)
+    # Push via Socket.IO to user
+    await sio.emit("new_notification", notif, room=f"user_{user_id}")
+    return notif
+
+
 # ─── Auth Helpers ───
 def get_spotify_oauth():
     return SpotifyOAuth(
@@ -480,6 +506,7 @@ async def create_room(body: CreateRoomRequest, request: Request):
         "joined_at": datetime.now(timezone.utc).isoformat(),
     })
     room.pop("_id", None)
+    # Notify: room created (broadcast to all connected users could be done, but for now we skip self-notification)
     return room
 
 @api_router.post("/rooms/join")
@@ -498,6 +525,15 @@ async def join_room(body: JoinRoomRequest, request: Request):
             "subscription": user.get("subscription", "free"),
             "joined_at": datetime.now(timezone.utc).isoformat(),
         })
+        # Notify host that someone joined
+        if room.get("host_id") and room["host_id"] != user["id"]:
+            await create_notification(
+                user_id=room["host_id"],
+                notif_type="room_joined",
+                source_user_id=user["id"],
+                content=f'{user.get("username", "Someone")} a rejoint votre room "{room.get("name", "")}"',
+                room_id=body.room_id,
+            )
     return {"message": "Joined room", "room": room}
 
 @api_router.post("/rooms/leave")
@@ -564,6 +600,20 @@ async def add_to_queue(body: AddToQueueRequest, request: Request):
     }
     await db.room_queue.insert_one(queue_item)
     queue_item.pop("_id", None)
+    # Notify room participants about new track
+    room_for_notif = await db.rooms.find_one({"id": body.room_id}, {"_id": 0})
+    participants_list = await db.room_participants.find({"room_id": body.room_id}, {"_id": 0}).to_list(100)
+    for p in participants_list:
+        if p["user_id"] != user["id"]:
+            await create_notification(
+                user_id=p["user_id"],
+                notif_type="track_added",
+                source_user_id=user["id"],
+                content=f'{user.get("username", "Someone")} a ajouté "{body.track_name}" dans "{room_for_notif.get("name", "la room")}"',
+                room_id=body.room_id,
+                track_id=body.track_id,
+                track_image=body.image,
+            )
     # Search for YouTube alternative
     yt_result = search_youtube_video(f"{body.track_name} {body.artist} official audio")
     if yt_result:
@@ -608,6 +658,17 @@ async def vote_queue_item(body: VoteRequest, request: Request):
             {"id": body.queue_item_id},
             {"$inc": {"votes": 1}, "$push": {"voted_by": user["id"]}}
         )
+        # Notify the person who added the track
+        if item.get("added_by") and item["added_by"] != user["id"]:
+            await create_notification(
+                user_id=item["added_by"],
+                notif_type="vote",
+                source_user_id=user["id"],
+                content=f'{user.get("username", "Someone")} a voté pour "{item.get("track_name", "un morceau")}"',
+                room_id=body.room_id,
+                track_id=item.get("track_id"),
+                track_image=item.get("image"),
+            )
         return {"message": "Voted", "votes": item["votes"] + 1}
 
 @api_router.get("/rooms/{room_id}/queue")
@@ -660,6 +721,11 @@ async def download_project_zip():
         headers={"Content-Disposition": "attachment; filename=notify-project.zip"}
     )
 
+@api_router.get("/download")
+async def download_redirect():
+    """Redirect /api/download to /api/download/project-zip"""
+    return RedirectResponse(url="/api/download/project-zip", status_code=302)
+
 
 # ─── URLs Info ───
 @api_router.get("/info/urls")
@@ -671,6 +737,46 @@ async def get_urls():
         "spotify_callback": SPOTIFY_REDIRECT_URI,
         "zip_download": f"{FRONTEND_URL}/api/download/project-zip",
     }
+
+
+# ─── NOTIFICATIONS ───
+@api_router.get("/notifications/{user_id}")
+async def get_notifications(user_id: str, request: Request):
+    user = await get_user_from_request(request)
+    if user["id"] != user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    notifications = await db.notifications.find(
+        {"user_id": user_id}, {"_id": 0}
+    ).sort("created_at", -1).to_list(100)
+    return {"notifications": notifications}
+
+@api_router.post("/notifications/mark-read/{notification_id}")
+async def mark_notification_read(notification_id: str, request: Request):
+    user = await get_user_from_request(request)
+    result = await db.notifications.update_one(
+        {"id": notification_id, "user_id": user["id"]},
+        {"$set": {"read": True}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {"message": "Marked as read"}
+
+@api_router.post("/notifications/mark-all-read")
+async def mark_all_notifications_read(request: Request):
+    user = await get_user_from_request(request)
+    await db.notifications.update_many(
+        {"user_id": user["id"], "read": False},
+        {"$set": {"read": True}}
+    )
+    return {"message": "All marked as read"}
+
+@api_router.get("/notifications/unread-count/{user_id}")
+async def get_unread_count(user_id: str, request: Request):
+    user = await get_user_from_request(request)
+    if user["id"] != user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    count = await db.notifications.count_documents({"user_id": user_id, "read": False})
+    return {"count": count}
 
 
 # Include router
@@ -693,6 +799,21 @@ sid_info = {}  # sid -> {user_id, room_id, username, avatar}
 @sio.event
 async def connect(sid, environ):
     logger.info(f"Socket connected: {sid}")
+
+@sio.event
+async def authenticate(sid, data):
+    """Authenticate user and join their notification room"""
+    token = data.get("token", "")
+    user = await get_user_from_token(token)
+    if user:
+        user_room = f"user_{user['id']}"
+        sio.enter_room(sid, user_room)
+        logger.info(f"User {user['id']} authenticated on socket {sid}, joined room {user_room}")
+        # Send unread count
+        count = await db.notifications.count_documents({"user_id": user["id"], "read": False})
+        await sio.emit("unread_count", {"count": count}, to=sid)
+    else:
+        await sio.emit("error", {"message": "Authentication failed"}, to=sid)
 
 @sio.event
 async def disconnect(sid):
