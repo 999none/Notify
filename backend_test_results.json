@@ -1,0 +1,235 @@
+{
+  "total_tests": 20,
+  "passed_tests": 19,
+  "failed_tests": 1,
+  "success_rate": 95.0,
+  "test_results": [
+    {
+      "test_name": "API Root Endpoint",
+      "expected_status": 200,
+      "actual_status": 200,
+      "success": true,
+      "error_msg": null,
+      "timestamp": "2026-03-11T00:45:26.028282",
+      "response_data": {
+        "message": "Notify API"
+      }
+    },
+    {
+      "test_name": "API Info URLs",
+      "expected_status": 200,
+      "actual_status": 200,
+      "success": true,
+      "error_msg": null,
+      "timestamp": "2026-03-11T00:45:26.142860",
+      "response_data": {
+        "frontend_url": "https://beat-bond.preview.emergentagent.com",
+        "backend_api": "https://beat-bond.preview.emergentagent.com/api",
+        "spotify_login": "https://beat-bond.preview.emergentagent.com/api/auth/spotify/login",
+        "spotify_callback": "https://beat-bond.preview.emergentagent.com/api/auth/spotify/callback",
+        "zip_download": "https://beat-bond.preview.emergentagent.com/api/download/project-zip"
+      }
+    },
+    {
+      "test_name": "Spotify Login Endpoint",
+      "expected_status": 200,
+      "actual_status": 200,
+      "success": true,
+      "error_msg": null,
+      "timestamp": "2026-03-11T00:45:26.294655",
+      "response_data": {
+        "auth_url": "https://accounts.spotify.com/authorize?client_id=81d007eb4f4f48febe75f23fba0b3a6e&response_type=code&redirect_uri=https%3A%2F%2Fbeat-bond.preview.emergentagent.com%2Fapi%2Fauth%2Fspotify%2Fcallback&scope=user-read-private+user-read-email+user-read-playback-state+user-read-recently-played+user-top-read+playlist-read-private+playlist-read-collaborative+streaming+user-modify-playback-state&show_dialog=True"
+      }
+    },
+    {
+      "test_name": "ZIP Download Endpoint",
+      "expected_status": 302,
+      "actual_status": 200,
+      "success": false,
+      "error_msg": null,
+      "timestamp": "2026-03-11T00:45:26.821318",
+      "response_data": "PK\u0003\u0004\u0014\u0000\u0000\u0000\b\u0000\ufffd\u0005k\\\u001a\u000e\u03b4\u0004\u000b\u0000\u0000((\u0000\u0000\u0016\u0000\u0000\u0000notify/backend_test.py\ufffd\u001a\ufffdn\ufffd\ufffd\ufffd}\ufffdb\ufffd \ufffdn\"\ufffd\ufffd\ufffd\ufffd\u000f\u000bl\u000b\u0156\r\ufffd\ufffd#\ufffd\ufffd\u0016\ufffd,\u0010\u00149+1\ufffd\f9\ufffd\ufffd],\ufffd\u0017\ufffd\u0014.Z$}\n\u001c\ufffd(\u0422\ufffd\u0427~\ufffd\u007f\ufffd\ufffd\ufffd\ufffd37\ufffdp\ufffd+\ufffdq\ufffd\ufffd\ufffd\ufffdr\u039c\ufffdm\ufffd\ufffd\ufffd\u000fFuU\ufffd.\ufffdlD\ufffd'\ufffdX\ufffd\ufffd<\ufffd\ufffd\ufffdy^\ufffd\ufffd0\ufffd\ufffdf1\ufffd?>$\ufffd\ufffdbIvE\ufffdyI\u001e\ufffd,\ufffd/\ufffd.9\u0263$L\ufffdI!^\ufffdz\ufffd!\ufffd\u001d\ufffd"
+    },
+    {
+      "test_name": "Create Status Check",
+      "expected_status": 200,
+      "actual_status": 200,
+      "success": true,
+      "error_msg": null,
+      "timestamp": "2026-03-11T00:45:26.951781",
+      "response_data": {
+        "id": "e6fe72aa-931b-4564-a2e0-29ee82b64eaf",
+        "client_name": "test_client",
+        "timestamp": "2026-03-11T00:45:26.917539Z"
+      }
+    },
+    {
+      "test_name": "Get Status Checks",
+      "expected_status": 200,
+      "actual_status": 200,
+      "success": true,
+      "error_msg": null,
+      "timestamp": "2026-03-11T00:45:27.059419",
+      "response_data": [
+        {
+          "id": "e6fe72aa-931b-4564-a2e0-29ee82b64eaf",
+          "client_name": "test_client",
+          "timestamp": "2026-03-11T00:45:26.917539Z"
+        }
+      ]
+    },
+    {
+      "test_name": "Get Current User",
+      "expected_status": 401,
+      "actual_status": 401,
+      "success": true,
+      "error_msg": null,
+      "timestamp": "2026-03-11T00:45:27.183179",
+      "response_data": {
+        "detail": "Missing token"
+      }
+    },
+    {
+      "test_name": "Search Friends",
+      "expected_status": 401,
+      "actual_status": 401,
+      "success": true,
+      "error_msg": null,
+      "timestamp": "2026-03-11T00:45:27.285920",
+      "response_data": {
+        "detail": "Missing token"
+      }
+    },
+    {
+      "test_name": "List Friends",
+      "expected_status": 401,
+      "actual_status": 401,
+      "success": true,
+      "error_msg": null,
+      "timestamp": "2026-03-11T00:45:27.472975",
+      "response_data": {
+        "detail": "Missing token"
+      }
+    },
+    {
+      "test_name": "Pending Friends",
+      "expected_status": 401,
+      "actual_status": 401,
+      "success": true,
+      "error_msg": null,
+      "timestamp": "2026-03-11T00:45:27.622607",
+      "response_data": {
+        "detail": "Missing token"
+      }
+    },
+    {
+      "test_name": "Calculate Compatibility",
+      "expected_status": 401,
+      "actual_status": 401,
+      "success": true,
+      "error_msg": null,
+      "timestamp": "2026-03-11T00:45:27.772709",
+      "response_data": {
+        "detail": "Missing token"
+      }
+    },
+    {
+      "test_name": "Get Compatibility",
+      "expected_status": 401,
+      "actual_status": 401,
+      "success": true,
+      "error_msg": null,
+      "timestamp": "2026-03-11T00:45:27.883564",
+      "response_data": {
+        "detail": "Missing token"
+      }
+    },
+    {
+      "test_name": "Create Room with Friend",
+      "expected_status": 401,
+      "actual_status": 401,
+      "success": true,
+      "error_msg": null,
+      "timestamp": "2026-03-11T00:45:28.054978",
+      "response_data": {
+        "detail": "Missing token"
+      }
+    },
+    {
+      "test_name": "Get Top Artists",
+      "expected_status": 401,
+      "actual_status": 401,
+      "success": true,
+      "error_msg": null,
+      "timestamp": "2026-03-11T00:45:28.179325",
+      "response_data": {
+        "detail": "Missing token"
+      }
+    },
+    {
+      "test_name": "Get Top Tracks",
+      "expected_status": 401,
+      "actual_status": 401,
+      "success": true,
+      "error_msg": null,
+      "timestamp": "2026-03-11T00:45:28.378867",
+      "response_data": {
+        "detail": "Missing token"
+      }
+    },
+    {
+      "test_name": "Get Recently Played",
+      "expected_status": 401,
+      "actual_status": 401,
+      "success": true,
+      "error_msg": null,
+      "timestamp": "2026-03-11T00:45:28.634800",
+      "response_data": {
+        "detail": "Missing token"
+      }
+    },
+    {
+      "test_name": "Get Playlists",
+      "expected_status": 401,
+      "actual_status": 401,
+      "success": true,
+      "error_msg": null,
+      "timestamp": "2026-03-11T00:45:28.796897",
+      "response_data": {
+        "detail": "Missing token"
+      }
+    },
+    {
+      "test_name": "List Rooms",
+      "expected_status": 401,
+      "actual_status": 401,
+      "success": true,
+      "error_msg": null,
+      "timestamp": "2026-03-11T00:45:28.921914",
+      "response_data": {
+        "detail": "Missing token"
+      }
+    },
+    {
+      "test_name": "Create Room",
+      "expected_status": 401,
+      "actual_status": 401,
+      "success": true,
+      "error_msg": null,
+      "timestamp": "2026-03-11T00:45:29.083524",
+      "response_data": {
+        "detail": "Missing token"
+      }
+    },
+    {
+      "test_name": "Direct ZIP Download",
+      "expected_status": 200,
+      "actual_status": 200,
+      "success": true,
+      "error_msg": null,
+      "timestamp": "2026-03-11T00:45:29.253344",
+      "response_data": "PK\u0003\u0004\u0014\u0000\u0000\u0000\b\u0000\ufffd\u0005k\\\u001a\u000e\u03b4\u0004\u000b\u0000\u0000((\u0000\u0000\u0016\u0000\u0000\u0000notify/backend_test.py\ufffd\u001a\ufffdn\ufffd\ufffd\ufffd}\ufffdb\ufffd \ufffdn\"\ufffd\ufffd\ufffd\ufffd\u000f\u000bl\u000b\u0156\r\ufffd\ufffd#\ufffd\ufffd\u0016\ufffd,\u0010\u00149+1\ufffd\f9\ufffd\ufffd],\ufffd\u0017\ufffd\u0014.Z$}\n\u001c\ufffd(\u0422\ufffd\u0427~\ufffd\u007f\ufffd\ufffd\ufffd\ufffd37\ufffdp\ufffd+\ufffdq\ufffd\ufffd\ufffd\ufffdr\u039c\ufffdm\ufffd\ufffd\ufffd\u000fFuU\ufffd.\ufffdlD\ufffd'\ufffdX\ufffd\ufffd<\ufffd\ufffd\ufffdy^\ufffd\ufffd0\ufffd\ufffdf1\ufffd?>$\ufffd\ufffdbIvE\ufffdyI\u001e\ufffd,\ufffd/\ufffd.9\u0263$L\ufffdI!^\ufffdz\ufffd!\ufffd\u001d\ufffd"
+    }
+  ],
+  "timestamp": "2026-03-11T00:45:29.254099"
+}

@@ -41,7 +41,7 @@ SPOTIFY_SCOPES = "user-read-private user-read-email user-read-playback-state use
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ─── Socket.IO Setup ───
+# Socket.IO Setup
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*', logger=False, engineio_logger=False)
 
 # FastAPI app
@@ -92,10 +92,16 @@ class VoteRequest(BaseModel):
 class SearchTrackRequest(BaseModel):
     query: str
 
+class FriendRequestModel(BaseModel):
+    target_user_id: str
+
+class CreateRoomWithFriendRequest(BaseModel):
+    friend_id: str
+    name: str
+
 
 # ─── Notification Helper ───
 async def create_notification(user_id: str, notif_type: str, source_user_id: str, content: str, room_id: str = None, track_id: str = None, track_image: str = None):
-    """Create a notification and push via Socket.IO"""
     notif_id = str(uuid.uuid4())
     source_user = await db.users.find_one({"id": source_user_id}, {"_id": 0})
     notif = {
@@ -114,7 +120,6 @@ async def create_notification(user_id: str, notif_type: str, source_user_id: str
     }
     await db.notifications.insert_one(notif)
     notif.pop("_id", None)
-    # Push via Socket.IO to user
     await sio.emit("new_notification", notif, room=f"user_{user_id}")
     return notif
 
@@ -496,7 +501,6 @@ async def create_room(body: CreateRoomRequest, request: Request):
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.rooms.insert_one(room)
-    # Host auto-joins
     await db.room_participants.insert_one({
         "room_id": room_id,
         "user_id": user["id"],
@@ -506,7 +510,6 @@ async def create_room(body: CreateRoomRequest, request: Request):
         "joined_at": datetime.now(timezone.utc).isoformat(),
     })
     room.pop("_id", None)
-    # Notify: room created (broadcast to all connected users could be done, but for now we skip self-notification)
     return room
 
 @api_router.post("/rooms/join")
@@ -525,7 +528,6 @@ async def join_room(body: JoinRoomRequest, request: Request):
             "subscription": user.get("subscription", "free"),
             "joined_at": datetime.now(timezone.utc).isoformat(),
         })
-        # Notify host that someone joined
         if room.get("host_id") and room["host_id"] != user["id"]:
             await create_notification(
                 user_id=room["host_id"],
@@ -540,7 +542,6 @@ async def join_room(body: JoinRoomRequest, request: Request):
 async def leave_room(body: JoinRoomRequest, request: Request):
     user = await get_user_from_request(request)
     await db.room_participants.delete_one({"room_id": body.room_id, "user_id": user["id"]})
-    # If host leaves, delete room
     room = await db.rooms.find_one({"id": body.room_id}, {"_id": 0})
     if room and room.get("host_id") == user["id"]:
         await db.rooms.delete_one({"id": body.room_id})
@@ -577,7 +578,6 @@ async def add_to_queue(body: AddToQueueRequest, request: Request):
     room = await db.rooms.find_one({"id": body.room_id}, {"_id": 0})
     if not room:
         raise HTTPException(status_code=404, detail="Room not found")
-    # Check if track already in queue
     existing = await db.room_queue.find_one({"room_id": body.room_id, "track_id": body.track_id})
     if existing:
         raise HTTPException(status_code=400, detail="Track already in queue")
@@ -600,7 +600,6 @@ async def add_to_queue(body: AddToQueueRequest, request: Request):
     }
     await db.room_queue.insert_one(queue_item)
     queue_item.pop("_id", None)
-    # Notify room participants about new track
     room_for_notif = await db.rooms.find_one({"id": body.room_id}, {"_id": 0})
     participants_list = await db.room_participants.find({"room_id": body.room_id}, {"_id": 0}).to_list(100)
     for p in participants_list:
@@ -614,7 +613,6 @@ async def add_to_queue(body: AddToQueueRequest, request: Request):
                 track_id=body.track_id,
                 track_image=body.image,
             )
-    # Search for YouTube alternative
     yt_result = search_youtube_video(f"{body.track_name} {body.artist} official audio")
     if yt_result:
         title_lower = yt_result["title"].lower()
@@ -647,7 +645,6 @@ async def vote_queue_item(body: VoteRequest, request: Request):
         raise HTTPException(status_code=404, detail="Queue item not found")
     voted_by = item.get("voted_by", [])
     if user["id"] in voted_by:
-        # Unvote
         await db.room_queue.update_one(
             {"id": body.queue_item_id},
             {"$inc": {"votes": -1}, "$pull": {"voted_by": user["id"]}}
@@ -658,7 +655,6 @@ async def vote_queue_item(body: VoteRequest, request: Request):
             {"id": body.queue_item_id},
             {"$inc": {"votes": 1}, "$push": {"voted_by": user["id"]}}
         )
-        # Notify the person who added the track
         if item.get("added_by") and item["added_by"] != user["id"]:
             await create_notification(
                 user_id=item["added_by"],
@@ -676,7 +672,6 @@ async def get_room_queue(room_id: str, request: Request):
     await get_user_from_request(request)
     queue = await db.room_queue.find({"room_id": room_id}, {"_id": 0}).to_list(200)
     queue.sort(key=lambda x: (-x.get("votes", 0), x.get("added_at", "")))
-    # Attach YouTube alternatives
     for item in queue:
         alt = await db.track_alternatives.find_one({"track_id": item["track_id"]}, {"_id": 0})
         if alt:
@@ -690,6 +685,389 @@ async def get_track_alternative(room_id: str, track_id: str, request: Request):
     if alt:
         return {"found": True, **alt}
     return {"found": False}
+
+
+# ─── FRIENDS SYSTEM ───
+
+@api_router.get("/friends/search")
+async def search_users(request: Request, q: str = ""):
+    user = await get_user_from_request(request)
+    if not q.strip():
+        return {"users": []}
+    # Search by username or spotify_id (case-insensitive)
+    query_regex = {"$regex": q.strip(), "$options": "i"}
+    users = await db.users.find(
+        {"$and": [
+            {"id": {"$ne": user["id"]}},
+            {"$or": [{"username": query_regex}, {"spotify_id": query_regex}]}
+        ]},
+        {"_id": 0, "id": 1, "username": 1, "avatar": 1, "spotify_id": 1, "subscription": 1}
+    ).to_list(20)
+    # Attach friendship status for each user
+    for u in users:
+        friendship = await db.friendships.find_one(
+            {"$or": [
+                {"user_id": user["id"], "friend_id": u["id"]},
+                {"user_id": u["id"], "friend_id": user["id"]}
+            ]},
+            {"_id": 0}
+        )
+        if friendship:
+            u["friendship_status"] = friendship.get("status", "none")
+            u["friendship_direction"] = "sent" if friendship.get("user_id") == user["id"] else "received"
+        else:
+            u["friendship_status"] = "none"
+            u["friendship_direction"] = None
+    return {"users": users}
+
+@api_router.post("/friends/request")
+async def send_friend_request(body: FriendRequestModel, request: Request):
+    user = await get_user_from_request(request)
+    if body.target_user_id == user["id"]:
+        raise HTTPException(status_code=400, detail="Cannot add yourself")
+    target = await db.users.find_one({"id": body.target_user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    existing = await db.friendships.find_one(
+        {"$or": [
+            {"user_id": user["id"], "friend_id": body.target_user_id},
+            {"user_id": body.target_user_id, "friend_id": user["id"]}
+        ]},
+        {"_id": 0}
+    )
+    if existing:
+        if existing["status"] == "accepted":
+            raise HTTPException(status_code=400, detail="Already friends")
+        if existing["status"] == "pending":
+            raise HTTPException(status_code=400, detail="Request already pending")
+    friendship_id = str(uuid.uuid4())
+    await db.friendships.insert_one({
+        "id": friendship_id,
+        "user_id": user["id"],
+        "friend_id": body.target_user_id,
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await create_notification(
+        user_id=body.target_user_id,
+        notif_type="friend_request",
+        source_user_id=user["id"],
+        content=f'{user.get("username", "Someone")} vous a envoyé une demande d\'ami',
+    )
+    return {"message": "Friend request sent"}
+
+@api_router.post("/friends/accept")
+async def accept_friend_request(body: FriendRequestModel, request: Request):
+    user = await get_user_from_request(request)
+    friendship = await db.friendships.find_one(
+        {"user_id": body.target_user_id, "friend_id": user["id"], "status": "pending"},
+        {"_id": 0}
+    )
+    if not friendship:
+        raise HTTPException(status_code=404, detail="No pending request from this user")
+    await db.friendships.update_one(
+        {"id": friendship["id"]},
+        {"$set": {"status": "accepted", "accepted_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    await create_notification(
+        user_id=body.target_user_id,
+        notif_type="friend_added",
+        source_user_id=user["id"],
+        content=f'{user.get("username", "Someone")} a accepté votre demande d\'ami',
+    )
+    return {"message": "Friend request accepted"}
+
+@api_router.post("/friends/reject")
+async def reject_friend_request(body: FriendRequestModel, request: Request):
+    user = await get_user_from_request(request)
+    result = await db.friendships.delete_one(
+        {"user_id": body.target_user_id, "friend_id": user["id"], "status": "pending"}
+    )
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="No pending request from this user")
+    return {"message": "Friend request rejected"}
+
+@api_router.post("/friends/remove")
+async def remove_friend(body: FriendRequestModel, request: Request):
+    user = await get_user_from_request(request)
+    result = await db.friendships.delete_one(
+        {"$or": [
+            {"user_id": user["id"], "friend_id": body.target_user_id, "status": "accepted"},
+            {"user_id": body.target_user_id, "friend_id": user["id"], "status": "accepted"}
+        ]}
+    )
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Friendship not found")
+    # Also remove compatibility data
+    await db.compatibility.delete_many(
+        {"$or": [
+            {"user_id": user["id"], "friend_id": body.target_user_id},
+            {"user_id": body.target_user_id, "friend_id": user["id"]}
+        ]}
+    )
+    return {"message": "Friend removed"}
+
+@api_router.get("/friends/list")
+async def list_friends(request: Request):
+    user = await get_user_from_request(request)
+    friendships = await db.friendships.find(
+        {"$or": [
+            {"user_id": user["id"], "status": "accepted"},
+            {"friend_id": user["id"], "status": "accepted"}
+        ]},
+        {"_id": 0}
+    ).to_list(200)
+    friends = []
+    for f in friendships:
+        friend_id = f["friend_id"] if f["user_id"] == user["id"] else f["user_id"]
+        friend_user = await db.users.find_one({"id": friend_id}, {"_id": 0, "id": 1, "username": 1, "avatar": 1, "spotify_id": 1, "subscription": 1})
+        if friend_user:
+            # Get compatibility score if exists
+            compat = await db.compatibility.find_one(
+                {"$or": [
+                    {"user_id": user["id"], "friend_id": friend_id},
+                    {"user_id": friend_id, "friend_id": user["id"]}
+                ]},
+                {"_id": 0}
+            )
+            friend_user["compatibility_score"] = compat.get("score") if compat else None
+            friends.append(friend_user)
+    return {"friends": friends}
+
+@api_router.get("/friends/pending")
+async def get_pending_requests(request: Request):
+    user = await get_user_from_request(request)
+    # Received requests
+    received = await db.friendships.find(
+        {"friend_id": user["id"], "status": "pending"},
+        {"_id": 0}
+    ).to_list(50)
+    received_list = []
+    for r in received:
+        sender = await db.users.find_one({"id": r["user_id"]}, {"_id": 0, "id": 1, "username": 1, "avatar": 1, "spotify_id": 1})
+        if sender:
+            sender["request_date"] = r.get("created_at", "")
+            received_list.append(sender)
+    # Sent requests
+    sent = await db.friendships.find(
+        {"user_id": user["id"], "status": "pending"},
+        {"_id": 0}
+    ).to_list(50)
+    sent_list = []
+    for s in sent:
+        target = await db.users.find_one({"id": s["friend_id"]}, {"_id": 0, "id": 1, "username": 1, "avatar": 1, "spotify_id": 1})
+        if target:
+            target["request_date"] = s.get("created_at", "")
+            sent_list.append(target)
+    return {"received": received_list, "sent": sent_list}
+
+@api_router.get("/friends/profile/{friend_id}")
+async def get_friend_profile(friend_id: str, request: Request):
+    user = await get_user_from_request(request)
+    # Verify friendship
+    friendship = await db.friendships.find_one(
+        {"$or": [
+            {"user_id": user["id"], "friend_id": friend_id, "status": "accepted"},
+            {"user_id": friend_id, "friend_id": user["id"], "status": "accepted"}
+        ]},
+        {"_id": 0}
+    )
+    if not friendship:
+        raise HTTPException(status_code=403, detail="Not friends with this user")
+    friend = await db.users.find_one({"id": friend_id}, {"_id": 0})
+    if not friend:
+        raise HTTPException(status_code=404, detail="User not found")
+    # Get compatibility
+    compat = await db.compatibility.find_one(
+        {"$or": [
+            {"user_id": user["id"], "friend_id": friend_id},
+            {"user_id": friend_id, "friend_id": user["id"]}
+        ]},
+        {"_id": 0}
+    )
+    return {
+        "friend": {
+            "id": friend["id"],
+            "username": friend.get("username", ""),
+            "avatar": friend.get("avatar"),
+            "spotify_id": friend.get("spotify_id", ""),
+            "subscription": friend.get("subscription", "free"),
+            "country": friend.get("country"),
+            "created_at": friend.get("created_at", ""),
+        },
+        "compatibility": compat,
+    }
+
+
+# ─── MUSIC COMPATIBILITY ───
+
+async def _get_user_spotify_data(user_id: str):
+    """Fetch top artists, tracks, and genres for a user from Spotify."""
+    try:
+        token_info = await get_valid_spotify_token(user_id)
+        sp = get_spotify_client(token_info)
+        # Top artists
+        artists_result = sp.current_user_top_artists(limit=50, time_range="medium_term")
+        top_artists = []
+        all_genres = set()
+        for a in artists_result.get("items", []):
+            top_artists.append({
+                "id": a["id"],
+                "name": a["name"],
+                "image": a["images"][0]["url"] if a.get("images") else None,
+            })
+            for g in a.get("genres", []):
+                all_genres.add(g)
+        # Top tracks
+        tracks_result = sp.current_user_top_tracks(limit=50, time_range="medium_term")
+        top_tracks = []
+        for t in tracks_result.get("items", []):
+            top_tracks.append({
+                "id": t["id"],
+                "name": t["name"],
+                "artist": ", ".join(ar["name"] for ar in t.get("artists", [])),
+                "image": t["album"]["images"][0]["url"] if t.get("album", {}).get("images") else None,
+            })
+        return {
+            "artists": top_artists,
+            "tracks": top_tracks,
+            "genres": list(all_genres),
+        }
+    except Exception as e:
+        logger.error(f"Failed to get Spotify data for user {user_id}: {e}")
+        return None
+
+@api_router.post("/compatibility/calculate/{friend_id}")
+async def calculate_compatibility(friend_id: str, request: Request):
+    user = await get_user_from_request(request)
+    # Verify friendship
+    friendship = await db.friendships.find_one(
+        {"$or": [
+            {"user_id": user["id"], "friend_id": friend_id, "status": "accepted"},
+            {"user_id": friend_id, "friend_id": user["id"], "status": "accepted"}
+        ]},
+        {"_id": 0}
+    )
+    if not friendship:
+        raise HTTPException(status_code=403, detail="Not friends with this user")
+    # Get Spotify data for both users
+    user_data = await _get_user_spotify_data(user["id"])
+    friend_data = await _get_user_spotify_data(friend_id)
+    if not user_data or not friend_data:
+        raise HTTPException(status_code=500, detail="Could not fetch Spotify data for one or both users. Make sure both users have connected Spotify.")
+    # Calculate common artists
+    user_artist_ids = {a["id"] for a in user_data["artists"]}
+    friend_artist_ids = {a["id"] for a in friend_data["artists"]}
+    common_artist_ids = user_artist_ids & friend_artist_ids
+    common_artists = [a for a in user_data["artists"] if a["id"] in common_artist_ids]
+    # Calculate common tracks
+    user_track_ids = {t["id"] for t in user_data["tracks"]}
+    friend_track_ids = {t["id"] for t in friend_data["tracks"]}
+    common_track_ids = user_track_ids & friend_track_ids
+    common_tracks = [t for t in user_data["tracks"] if t["id"] in common_track_ids]
+    # Calculate genre similarity
+    user_genres = set(user_data["genres"])
+    friend_genres = set(friend_data["genres"])
+    common_genres = user_genres & friend_genres
+    all_genres = user_genres | friend_genres
+    # Scores
+    max_artists = max(len(user_artist_ids), len(friend_artist_ids), 1)
+    artists_score = (len(common_artist_ids) / max_artists) * 100
+    max_tracks = max(len(user_track_ids), len(friend_track_ids), 1)
+    tracks_score = (len(common_track_ids) / max_tracks) * 100
+    genre_score = (len(common_genres) / max(len(all_genres), 1)) * 100
+    # Weighted total: 40% artists, 40% tracks, 20% genres
+    total_score = round(artists_score * 0.4 + tracks_score * 0.4 + genre_score * 0.2)
+    # Save result
+    compat_doc = {
+        "user_id": user["id"],
+        "friend_id": friend_id,
+        "score": total_score,
+        "common_artists": common_artists[:10],
+        "common_tracks": common_tracks[:10],
+        "common_genres": list(common_genres)[:15],
+        "artists_score": round(artists_score),
+        "tracks_score": round(tracks_score),
+        "genres_score": round(genre_score),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.compatibility.update_one(
+        {"$or": [
+            {"user_id": user["id"], "friend_id": friend_id},
+            {"user_id": friend_id, "friend_id": user["id"]}
+        ]},
+        {"$set": compat_doc},
+        upsert=True
+    )
+    compat_doc.pop("_id", None)
+    return compat_doc
+
+@api_router.get("/compatibility/{friend_id}")
+async def get_compatibility(friend_id: str, request: Request):
+    user = await get_user_from_request(request)
+    compat = await db.compatibility.find_one(
+        {"$or": [
+            {"user_id": user["id"], "friend_id": friend_id},
+            {"user_id": friend_id, "friend_id": user["id"]}
+        ]},
+        {"_id": 0}
+    )
+    if not compat:
+        return {"compatibility": None}
+    return {"compatibility": compat}
+
+
+# ─── Create Room With Friend ───
+@api_router.post("/rooms/create-with-friend")
+async def create_room_with_friend(body: CreateRoomWithFriendRequest, request: Request):
+    user = await get_user_from_request(request)
+    # Verify friendship
+    friendship = await db.friendships.find_one(
+        {"$or": [
+            {"user_id": user["id"], "friend_id": body.friend_id, "status": "accepted"},
+            {"user_id": body.friend_id, "friend_id": user["id"], "status": "accepted"}
+        ]},
+        {"_id": 0}
+    )
+    if not friendship:
+        raise HTTPException(status_code=403, detail="Not friends with this user")
+    friend = await db.users.find_one({"id": body.friend_id}, {"_id": 0})
+    if not friend:
+        raise HTTPException(status_code=404, detail="Friend not found")
+    room_id = str(uuid.uuid4())[:8]
+    room = {
+        "id": room_id,
+        "name": body.name.strip(),
+        "host_id": user["id"],
+        "host_name": user.get("username", "Unknown"),
+        "host_avatar": user.get("avatar"),
+        "current_track": None,
+        "is_playing": False,
+        "play_started_at": None,
+        "play_position_ms": 0,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.rooms.insert_one(room)
+    # Add both users as participants
+    for u in [user, friend]:
+        await db.room_participants.insert_one({
+            "room_id": room_id,
+            "user_id": u["id"],
+            "username": u.get("username", "Unknown"),
+            "avatar": u.get("avatar"),
+            "subscription": u.get("subscription", "free"),
+            "joined_at": datetime.now(timezone.utc).isoformat(),
+        })
+    room.pop("_id", None)
+    # Notify friend
+    await create_notification(
+        user_id=body.friend_id,
+        notif_type="room_created",
+        source_user_id=user["id"],
+        content=f'{user.get("username", "Someone")} vous invite dans la room "{body.name.strip()}"',
+        room_id=room_id,
+    )
+    return room
 
 
 # ─── ZIP Download Endpoint ───
@@ -723,7 +1101,6 @@ async def download_project_zip():
 
 @api_router.get("/download")
 async def download_redirect():
-    """Redirect /api/download to /api/download/project-zip"""
     return RedirectResponse(url="/api/download/project-zip", status_code=302)
 
 
@@ -792,9 +1169,8 @@ fastapi_app.add_middleware(
 
 
 # ─── Socket.IO Events ───
-# In-memory room state for real-time sync
-room_sids = {}  # room_id -> set of sids
-sid_info = {}  # sid -> {user_id, room_id, username, avatar}
+room_sids = {}
+sid_info = {}
 
 @sio.event
 async def connect(sid, environ):
@@ -802,14 +1178,11 @@ async def connect(sid, environ):
 
 @sio.event
 async def authenticate(sid, data):
-    """Authenticate user and join their notification room"""
     token = data.get("token", "")
     user = await get_user_from_token(token)
     if user:
         user_room = f"user_{user['id']}"
         sio.enter_room(sid, user_room)
-        logger.info(f"User {user['id']} authenticated on socket {sid}, joined room {user_room}")
-        # Send unread count
         count = await db.notifications.count_documents({"user_id": user["id"], "read": False})
         await sio.emit("unread_count", {"count": count}, to=sid)
     else:
@@ -823,10 +1196,8 @@ async def disconnect(sid):
         if room_id and room_id in room_sids:
             room_sids[room_id].discard(sid)
             sio.leave_room(sid, room_id)
-            # Notify others
             participants = await _get_room_participants(room_id)
             await sio.emit("participants_update", {"participants": participants}, room=room_id)
-    logger.info(f"Socket disconnected: {sid}")
 
 @sio.event
 async def join_room(sid, data):
@@ -836,7 +1207,6 @@ async def join_room(sid, data):
     if not user or not room_id:
         await sio.emit("error", {"message": "Invalid token or room"}, to=sid)
         return
-    # Join socket.io room
     sio.enter_room(sid, room_id)
     if room_id not in room_sids:
         room_sids[room_id] = set()
@@ -847,7 +1217,6 @@ async def join_room(sid, data):
         "username": user.get("username", "Unknown"),
         "avatar": user.get("avatar"),
     }
-    # Ensure in DB participants
     existing = await db.room_participants.find_one({"room_id": room_id, "user_id": user["id"]})
     if not existing:
         await db.room_participants.insert_one({
@@ -858,7 +1227,6 @@ async def join_room(sid, data):
             "subscription": user.get("subscription", "free"),
             "joined_at": datetime.now(timezone.utc).isoformat(),
         })
-    # Send current room state
     room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
     queue = await db.room_queue.find({"room_id": room_id}, {"_id": 0}).to_list(200)
     queue.sort(key=lambda x: (-x.get("votes", 0), x.get("added_at", "")))
@@ -872,7 +1240,6 @@ async def join_room(sid, data):
         "queue": queue,
         "participants": participants,
     }, to=sid)
-    # Notify everyone of updated participants
     await sio.emit("participants_update", {"participants": participants}, room=room_id)
 
 @sio.event
@@ -888,7 +1255,6 @@ async def leave_room(sid, data):
 
 @sio.event
 async def queue_add(sid, data):
-    """Track added to queue - broadcast updated queue"""
     room_id = data.get("room_id")
     if not room_id:
         return
@@ -902,7 +1268,6 @@ async def queue_add(sid, data):
 
 @sio.event
 async def queue_vote(sid, data):
-    """Vote changed - broadcast updated queue"""
     room_id = data.get("room_id")
     if not room_id:
         return
@@ -916,13 +1281,11 @@ async def queue_vote(sid, data):
 
 @sio.event
 async def play_track(sid, data):
-    """Host plays a track - sync to all"""
     room_id = data.get("room_id")
     track = data.get("track")
     info = sid_info.get(sid)
     if not info or not room_id:
         return
-    # Verify host
     room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
     if not room or room.get("host_id") != info["user_id"]:
         await sio.emit("error", {"message": "Only the host can control playback"}, to=sid)
@@ -930,24 +1293,14 @@ async def play_track(sid, data):
     now = datetime.now(timezone.utc).isoformat()
     await db.rooms.update_one(
         {"id": room_id},
-        {"$set": {
-            "current_track": track,
-            "is_playing": True,
-            "play_started_at": now,
-            "play_position_ms": 0,
-        }}
+        {"$set": {"current_track": track, "is_playing": True, "play_started_at": now, "play_position_ms": 0}}
     )
-    # Get YouTube alternative for the track
     youtube_video_id = None
     alt = await db.track_alternatives.find_one({"track_id": track.get("track_id", track.get("id", ""))}, {"_id": 0})
     if alt:
         youtube_video_id = alt.get("video_id")
     await sio.emit("playback_sync", {
-        "action": "play",
-        "track": track,
-        "position_ms": 0,
-        "timestamp": now,
-        "youtube_video_id": youtube_video_id,
+        "action": "play", "track": track, "position_ms": 0, "timestamp": now, "youtube_video_id": youtube_video_id,
     }, room=room_id)
 
 @sio.event
@@ -960,14 +1313,9 @@ async def pause_track(sid, data):
     room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
     if not room or room.get("host_id") != info["user_id"]:
         return
-    await db.rooms.update_one(
-        {"id": room_id},
-        {"$set": {"is_playing": False, "play_position_ms": position_ms}}
-    )
+    await db.rooms.update_one({"id": room_id}, {"$set": {"is_playing": False, "play_position_ms": position_ms}})
     await sio.emit("playback_sync", {
-        "action": "pause",
-        "position_ms": position_ms,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "action": "pause", "position_ms": position_ms, "timestamp": datetime.now(timezone.utc).isoformat(),
     }, room=room_id)
 
 @sio.event
@@ -981,19 +1329,13 @@ async def resume_track(sid, data):
     if not room or room.get("host_id") != info["user_id"]:
         return
     now = datetime.now(timezone.utc).isoformat()
-    await db.rooms.update_one(
-        {"id": room_id},
-        {"$set": {"is_playing": True, "play_started_at": now, "play_position_ms": position_ms}}
-    )
+    await db.rooms.update_one({"id": room_id}, {"$set": {"is_playing": True, "play_started_at": now, "play_position_ms": position_ms}})
     await sio.emit("playback_sync", {
-        "action": "resume",
-        "position_ms": position_ms,
-        "timestamp": now,
+        "action": "resume", "position_ms": position_ms, "timestamp": now,
     }, room=room_id)
 
 @sio.event
 async def next_track(sid, data):
-    """Skip to next track in queue"""
     room_id = data.get("room_id")
     info = sid_info.get(sid)
     if not info or not room_id:
@@ -1001,65 +1343,44 @@ async def next_track(sid, data):
     room = await db.rooms.find_one({"id": room_id}, {"_id": 0})
     if not room or room.get("host_id") != info["user_id"]:
         return
-    # Remove current track from queue if present
     current = room.get("current_track")
     if current:
         await db.room_queue.delete_one({"room_id": room_id, "track_id": current.get("track_id", current.get("id", ""))})
-    # Get next track from queue
     queue = await db.room_queue.find({"room_id": room_id}, {"_id": 0}).to_list(200)
     queue.sort(key=lambda x: (-x.get("votes", 0), x.get("added_at", "")))
     if queue:
         next_item = queue[0]
         track_data = {
-            "track_id": next_item["track_id"],
-            "track_name": next_item["track_name"],
-            "artist": next_item["artist"],
-            "album": next_item.get("album", ""),
-            "image": next_item.get("image"),
-            "duration_ms": next_item.get("duration_ms", 0),
+            "track_id": next_item["track_id"], "track_name": next_item["track_name"],
+            "artist": next_item["artist"], "album": next_item.get("album", ""),
+            "image": next_item.get("image"), "duration_ms": next_item.get("duration_ms", 0),
             "external_url": next_item.get("external_url"),
         }
         now = datetime.now(timezone.utc).isoformat()
-        await db.rooms.update_one(
-            {"id": room_id},
-            {"$set": {
-                "current_track": track_data,
-                "is_playing": True,
-                "play_started_at": now,
-                "play_position_ms": 0,
-            }}
-        )
+        await db.rooms.update_one({"id": room_id}, {"$set": {
+            "current_track": track_data, "is_playing": True, "play_started_at": now, "play_position_ms": 0,
+        }})
         youtube_video_id = None
         alt = await db.track_alternatives.find_one({"track_id": next_item["track_id"]}, {"_id": 0})
         if alt:
             youtube_video_id = alt.get("video_id")
-        # Update queue list
         remaining_queue = queue[1:] if len(queue) > 1 else []
         for item in remaining_queue:
             a = await db.track_alternatives.find_one({"track_id": item["track_id"]}, {"_id": 0})
             if a:
                 item["youtube_video_id"] = a.get("video_id")
         await sio.emit("playback_sync", {
-            "action": "play",
-            "track": track_data,
-            "position_ms": 0,
-            "timestamp": now,
-            "youtube_video_id": youtube_video_id,
+            "action": "play", "track": track_data, "position_ms": 0, "timestamp": now, "youtube_video_id": youtube_video_id,
         }, room=room_id)
         await sio.emit("queue_update", {"queue": remaining_queue}, room=room_id)
     else:
-        # No more tracks
-        await db.rooms.update_one(
-            {"id": room_id},
-            {"$set": {"current_track": None, "is_playing": False, "play_position_ms": 0}}
-        )
+        await db.rooms.update_one({"id": room_id}, {"$set": {"current_track": None, "is_playing": False, "play_position_ms": 0}})
         await sio.emit("playback_sync", {"action": "stop"}, room=room_id)
         await sio.emit("queue_update", {"queue": []}, room=room_id)
 
 
 async def _get_room_participants(room_id: str):
     participants = await db.room_participants.find({"room_id": room_id}, {"_id": 0}).to_list(100)
-    # Check which are online via socket
     online_user_ids = set()
     for s, info in sid_info.items():
         if info.get("room_id") == room_id:

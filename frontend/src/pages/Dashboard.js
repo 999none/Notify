@@ -26,6 +26,7 @@ import { Separator } from "@/components/ui/separator";
 import axios from "axios";
 import MusicPlayer, { PlayButton } from "@/components/MusicPlayer";
 import NotificationFeed, { NotificationBadge, useNotificationSocket } from "@/components/NotificationFeed";
+import FriendsTab from "@/components/FriendsTab";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -750,13 +751,19 @@ export default function Dashboard({ user, onLogout }) {
           </a>
         </div>
 
-        {/* Show notification feed when notifications tab is active */}
+        {/* Show content based on active tab */}
         {activeTab === "notifications" ? (
           <div className="max-w-3xl">
             <NotificationFeed userId={user?.id} />
           </div>
+        ) : activeTab === "friends" ? (
+          <FriendsTab user={user} />
+        ) : activeTab === "rooms" ? (
+          <div className="max-w-3xl">
+            <RoomsCard navigate={navigate} />
+          </div>
         ) : (
-          /* Bento Grid */
+          /* Dashboard Bento Grid */
           <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
             {/* Profile Card */}
             <div className="md:col-span-5 lg:col-span-4">
@@ -783,17 +790,12 @@ export default function Dashboard({ user, onLogout }) {
               <PlaylistsCard playlists={playlists} loading={loadingPlaylists} />
             </div>
 
-            {/* Friends (placeholder) */}
-            <div className="md:col-span-5 lg:col-span-4">
-              <FriendsCard />
-            </div>
-
-            {/* Rooms (functional) */}
-            <div className="md:col-span-7 lg:col-span-8">
+            {/* Rooms */}
+            <div className="col-span-full">
               <RoomsCard navigate={navigate} />
             </div>
 
-            {/* Activity Feed - Notification Feed inline */}
+            {/* Activity Feed */}
             <div className="col-span-full">
               <NotificationFeed userId={user?.id} />
             </div>
