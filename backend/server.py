@@ -1116,6 +1116,205 @@ async def get_urls():
     }
 
 
+# ─── STATS & RECAP ───
+
+LISTENING_PERSONALITIES = [
+    {"name": "The Explorer", "desc": "Toujours à la recherche de nouveaux sons", "min_genres": 10},
+    {"name": "The Loyalist", "desc": "Fidèle à ses artistes préférés", "min_genres": 0},
+    {"name": "The Eclectic", "desc": "Un goût musical diversifié et raffiné", "min_genres": 7},
+    {"name": "The Mainstream", "desc": "Toujours dans le top des charts", "min_genres": 3},
+    {"name": "The Night Owl", "desc": "La musique est meilleure la nuit", "min_genres": 0},
+]
+
+def determine_listening_personality(genres_count: int, top_artist_popularity: int) -> dict:
+    if genres_count >= 10:
+        return LISTENING_PERSONALITIES[0]  # Explorer
+    elif genres_count >= 7:
+        return LISTENING_PERSONALITIES[2]  # Eclectic
+    elif top_artist_popularity >= 75:
+        return LISTENING_PERSONALITIES[3]  # Mainstream
+    else:
+        return LISTENING_PERSONALITIES[1]  # Loyalist
+
+
+@api_router.get("/stats")
+async def get_user_stats(request: Request):
+    """Fetch stats from Spotify and save to DB."""
+    user = await get_user_from_request(request)
+    token_info = await get_valid_spotify_token(user["id"])
+    sp = get_spotify_client(token_info)
+
+    try:
+        # Fetch top artists (short, medium, long term)
+        artists_result = sp.current_user_top_artists(limit=20, time_range="medium_term")
+        top_artists = []
+        all_genres = {}
+        for a in artists_result.get("items", []):
+            top_artists.append({
+                "id": a["id"],
+                "name": a["name"],
+                "popularity": a.get("popularity", 0),
+                "genres": a.get("genres", [])[:3],
+                "image": a["images"][0]["url"] if a.get("images") else None,
+                "external_url": a.get("external_urls", {}).get("spotify"),
+            })
+            for g in a.get("genres", []):
+                all_genres[g] = all_genres.get(g, 0) + 1
+
+        # Fetch top tracks
+        tracks_result = sp.current_user_top_tracks(limit=20, time_range="medium_term")
+        top_tracks = []
+        for t in tracks_result.get("items", []):
+            top_tracks.append({
+                "id": t["id"],
+                "name": t["name"],
+                "artist": ", ".join(ar["name"] for ar in t.get("artists", [])),
+                "album": t.get("album", {}).get("name", ""),
+                "image": t["album"]["images"][0]["url"] if t.get("album", {}).get("images") else None,
+                "duration_ms": t.get("duration_ms", 0),
+                "popularity": t.get("popularity", 0),
+                "external_url": t.get("external_urls", {}).get("spotify"),
+            })
+
+        # Fetch recently played for listening time estimate
+        recent_result = sp.current_user_recently_played(limit=50)
+        total_ms = 0
+        for item in recent_result.get("items", []):
+            total_ms += item.get("track", {}).get("duration_ms", 0)
+
+        # Estimate monthly listening time (50 recent tracks extrapolated)
+        recent_count = len(recent_result.get("items", []))
+        avg_track_ms = total_ms / recent_count if recent_count > 0 else 210000
+        estimated_monthly_minutes = round((avg_track_ms * 30 * 20) / 60000)  # ~20 tracks/day
+
+        # Sort genres by frequency
+        sorted_genres = sorted(all_genres.items(), key=lambda x: x[1], reverse=True)
+        favorite_genres = [{"name": g, "count": c} for g, c in sorted_genres[:15]]
+
+        stats_doc = {
+            "user_id": user["id"],
+            "top_artists": top_artists,
+            "top_tracks": top_tracks,
+            "favorite_genres": favorite_genres,
+            "listening_time_estimate": estimated_monthly_minutes,
+            "total_genres_count": len(all_genres),
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+        }
+
+        await db.user_stats.update_one(
+            {"user_id": user["id"]},
+            {"$set": stats_doc},
+            upsert=True
+        )
+        stats_doc.pop("_id", None)
+        return stats_doc
+
+    except Exception as e:
+        logger.error(f"Stats fetch error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch stats from Spotify")
+
+
+@api_router.get("/stats/saved")
+async def get_saved_stats(request: Request):
+    """Get cached stats from DB."""
+    user = await get_user_from_request(request)
+    stats = await db.user_stats.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not stats:
+        return {"stats": None}
+    return stats
+
+
+@api_router.post("/recap/generate")
+async def generate_recap(request: Request):
+    """Generate a recap from current stats."""
+    user = await get_user_from_request(request)
+
+    # First fetch fresh stats
+    token_info = await get_valid_spotify_token(user["id"])
+    sp = get_spotify_client(token_info)
+
+    try:
+        artists_result = sp.current_user_top_artists(limit=20, time_range="long_term")
+        top_artists = []
+        all_genres = {}
+        for a in artists_result.get("items", []):
+            top_artists.append({
+                "id": a["id"],
+                "name": a["name"],
+                "popularity": a.get("popularity", 0),
+                "genres": a.get("genres", [])[:3],
+                "image": a["images"][0]["url"] if a.get("images") else None,
+            })
+            for g in a.get("genres", []):
+                all_genres[g] = all_genres.get(g, 0) + 1
+
+        tracks_result = sp.current_user_top_tracks(limit=20, time_range="long_term")
+        top_tracks = []
+        for t in tracks_result.get("items", []):
+            top_tracks.append({
+                "id": t["id"],
+                "name": t["name"],
+                "artist": ", ".join(ar["name"] for ar in t.get("artists", [])),
+                "image": t["album"]["images"][0]["url"] if t.get("album", {}).get("images") else None,
+            })
+
+        sorted_genres = sorted(all_genres.items(), key=lambda x: x[1], reverse=True)
+
+        top_artist = top_artists[0] if top_artists else {"name": "Unknown", "image": None}
+        top_track = top_tracks[0] if top_tracks else {"name": "Unknown", "artist": "Unknown", "image": None}
+        fav_genre = sorted_genres[0][0] if sorted_genres else "Unknown"
+
+        top_popularity = top_artists[0].get("popularity", 50) if top_artists else 50
+        personality = determine_listening_personality(len(all_genres), top_popularity)
+
+        now = datetime.now(timezone.utc)
+        recap_id = str(uuid.uuid4())[:12]
+        recap_doc = {
+            "id": recap_id,
+            "user_id": user["id"],
+            "username": user.get("username", "Unknown"),
+            "avatar": user.get("avatar"),
+            "year": now.year,
+            "month": now.month,
+            "top_artist": top_artist,
+            "top_track": top_track,
+            "favorite_genre": fav_genre,
+            "top_genres": [g for g, _ in sorted_genres[:5]],
+            "listening_personality": personality,
+            "top_artists_preview": top_artists[:5],
+            "top_tracks_preview": top_tracks[:5],
+            "created_at": now.isoformat(),
+        }
+
+        await db.recaps.insert_one(recap_doc)
+        recap_doc.pop("_id", None)
+        return recap_doc
+
+    except Exception as e:
+        logger.error(f"Recap generation error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate recap")
+
+
+@api_router.get("/recaps")
+async def get_user_recaps(request: Request):
+    """Get all recaps for current user."""
+    user = await get_user_from_request(request)
+    recaps = await db.recaps.find(
+        {"user_id": user["id"]}, {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    return {"recaps": recaps}
+
+
+@api_router.get("/recap/{recap_id}")
+async def get_recap(recap_id: str, request: Request):
+    """Get a specific recap."""
+    user = await get_user_from_request(request)
+    recap = await db.recaps.find_one({"id": recap_id, "user_id": user["id"]}, {"_id": 0})
+    if not recap:
+        raise HTTPException(status_code=404, detail="Recap not found")
+    return recap
+
+
 # ─── NOTIFICATIONS ───
 @api_router.get("/notifications/{user_id}")
 async def get_notifications(user_id: str, request: Request):

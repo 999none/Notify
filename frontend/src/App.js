@@ -5,6 +5,7 @@ import axios from "axios";
 import LandingPage from "@/pages/LandingPage";
 import Dashboard from "@/pages/Dashboard";
 import RoomPage from "@/pages/RoomPage";
+import StatsPage from "@/pages/StatsPage";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -116,6 +117,14 @@ function App() {
           element={
             <ProtectedRoute user={user} loading={loading}>
               <RoomPage user={user} />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/stats"
+          element={
+            <ProtectedRoute user={user} loading={loading}>
+              <StatsPage user={user} />
             </ProtectedRoute>
           }
         />

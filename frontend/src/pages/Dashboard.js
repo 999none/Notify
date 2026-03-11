@@ -20,6 +20,7 @@ import {
   Loader2,
   Crown,
   ArrowRight,
+  BarChart3,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
@@ -36,6 +37,7 @@ const HEADPHONES_IMG = "https://images.unsplash.com/photo-1697040975575-0baa5b9c
 
 const NAV_ITEMS = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { id: "stats", label: "Stats & Recap", icon: BarChart3 },
   { id: "friends", label: "Friends", icon: Users },
   { id: "rooms", label: "Listening Rooms", icon: Radio },
   { id: "notifications", label: "Notifications", icon: Bell },
@@ -69,7 +71,7 @@ function formatPlayedAt(dateStr) {
 }
 
 // ─── Sidebar ───
-function Sidebar({ activeTab, setActiveTab, user, onLogout, unreadCount }) {
+function Sidebar({ activeTab, setActiveTab, user, onLogout, unreadCount, navigate }) {
   return (
     <aside className="sidebar-desktop glass-sidebar fixed left-0 top-0 bottom-0 w-[260px] flex flex-col z-50" data-testid="sidebar">
       <div className="flex items-center gap-2.5 px-6 py-7">
@@ -86,7 +88,13 @@ function Sidebar({ activeTab, setActiveTab, user, onLogout, unreadCount }) {
           <button
             key={item.id}
             data-testid={`nav-${item.id}`}
-            onClick={() => setActiveTab(item.id)}
+            onClick={() => {
+              if (item.id === "stats") {
+                navigate("/stats");
+              } else {
+                setActiveTab(item.id);
+              }
+            }}
             className={`nav-item w-full relative ${activeTab === item.id ? "active" : ""}`}
           >
             <div className="relative">
@@ -125,15 +133,21 @@ function Sidebar({ activeTab, setActiveTab, user, onLogout, unreadCount }) {
 }
 
 // ─── Mobile Nav ───
-function MobileNav({ activeTab, setActiveTab, unreadCount }) {
+function MobileNav({ activeTab, setActiveTab, unreadCount, navigate }) {
   return (
     <div className="mobile-nav fixed bottom-0 left-0 right-0 z-50 glass-sidebar border-t border-white/5 px-2 py-2" data-testid="mobile-nav">
       <div className="flex items-center justify-around">
-        {NAV_ITEMS.slice(0, 4).map((item) => (
+        {NAV_ITEMS.slice(0, 5).map((item) => (
           <button
             key={item.id}
             data-testid={`mobile-nav-${item.id}`}
-            onClick={() => setActiveTab(item.id)}
+            onClick={() => {
+              if (item.id === "stats") {
+                navigate("/stats");
+              } else {
+                setActiveTab(item.id);
+              }
+            }}
             className={`flex flex-col items-center gap-1 px-3 py-2 rounded-xl transition-colors relative ${
               activeTab === item.id ? "text-blue-400" : "text-zinc-500"
             }`}
@@ -727,8 +741,9 @@ export default function Dashboard({ user, onLogout }) {
         user={user}
         onLogout={onLogout}
         unreadCount={unreadCount}
+        navigate={navigate}
       />
-      <MobileNav activeTab={activeTab} setActiveTab={setActiveTab} unreadCount={unreadCount} />
+      <MobileNav activeTab={activeTab} setActiveTab={setActiveTab} unreadCount={unreadCount} navigate={navigate} />
 
       <main className="md:ml-[260px] min-h-screen p-6 md:p-8 lg:p-10 pb-24 md:pb-10">
         {/* Header */}
